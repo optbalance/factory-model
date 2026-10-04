@@ -1,0 +1,8 @@
+{
+  "name": "factory-model",
+  "private": true,
+  "pi": {
+    "extensions": ["./adapters/pi/extensions/factory-guards.ts"],
+    "skills": ["./skills"]
+  }
+}
