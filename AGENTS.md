@@ -2,7 +2,8 @@
 
 This repo is the factory: the process that builds products, not a product itself. It is used for
 any product, with any harness. Read `docs/how-the-factory-works.md` for the big picture and
-`docs/building-the-factory.md` for the details.
+`docs/building-the-factory.md` for the details. What a product must provide is in
+`docs/product/product-contract.md`.
 
 ## Strict rules
 
@@ -18,3 +19,16 @@ job), `docs/` describes products and harnesses as examples, and `templates/` hol
 starting points for new products.
 
 If a change can't be made without breaking a rule, stop and ask. Don't work around the rule.
+
+## Known issues: `docs/todo.md`
+
+`docs/todo.md` lists known issues and missing features that are postponed on purpose.
+
+- Before raising an issue, check `docs/todo.md`. If it's already listed, don't raise it again.
+  Mention it only if your current work makes it worse or depends on it.
+- When the user asks to postpone an issue, add it to `docs/todo.md` as one bullet a cold-start
+  agent can act on: what's wrong, where (files), what goes wrong because of it, and a possible fix
+  if known.
+- Escalate instead of postponing when the issue can't wait: it blocks the current task, or breaks
+  the verify gate, isolation, security or data. Say why it can't be postponed.
+- When you fix a listed issue, remove its bullet.

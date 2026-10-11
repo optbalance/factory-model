@@ -77,7 +77,11 @@ The factory and the product are **two separate repos** with a clear contract bet
 3. `docs/specs/`: where specs and task files live.
 4. `toolchain.Containerfile`: the image the product builds and tests in (JDK and Gradle, Node,
    Go…). The factory never installs a product's toolchain itself. It builds its own layers on top
-   of this image (Module 2).
+   of this image (Module 2). If the build tool keeps downloaded dependencies outside the worktree,
+   the image declares where, with a `factory.dep-cache` label (Module 1).
+5. `scripts/deps` (recommended): prints the product's direct dependencies, one per line. The
+   runner compares its output before and after a task, so a task can't add a dependency its task
+   file doesn't declare (Module 3). Without it, only the reviewer checks new dependencies.
 
 **How they connect:**
 
@@ -107,7 +111,7 @@ factory-model/
 ├── roles/                     # role prompts: planner.md, implementer.md, reviewer.md
 ├── skills/                    # Agent Skills (SKILL.md): spec, plan, orchestrate, retro
 ├── guards/                    # neutral guard scripts + their tests
-├── bin/                       # sandbox, build-worker, agent-run, run-task, fan-out, collect, eval, check-product, check-factory
+├── bin/                       # sandbox, build-worker, dep-cache, agent-run, run-task, fan-out, collect, eval, check-product, check-factory
 ├── adapters/
 │   ├── pi/
 │   │   ├── Containerfile      # Pi layer of the worker image
@@ -136,7 +140,7 @@ factory-model/
 │           ├── skills -> ../../../skills
 │           ├── hooks.json
 │           └── guard.sh
-├── templates/                 # task.md, product AGENTS.md, verify, toolchain.Containerfile (examples, copied by hand)
+├── templates/                 # task.md, product AGENTS.md, verify, toolchain.Containerfile, deps (examples, copied by hand)
 ├── evals/
 ├── runs/                      # run logs (gitignored)
 └── docs/
@@ -289,15 +293,17 @@ decides how much autonomy you can safely give later.
 4. `toolchain.Containerfile`: the image that `scripts/verify` and the agents' build and test
    commands run in. If the product already has a CI or dev-container image, this file can be a
    single `FROM` line that points at it. The requirements are listed with the template below.
+5. `scripts/deps` (recommended): lists the product's direct dependencies, so the runner can check
+   that a task only adds the ones its task file declares. See the template below.
 
-Commit all four on `main`. `fan-out` creates worktrees from `main`, so agents only see what's
+Commit them on `main`. `fan-out` creates worktrees from `main`, so agents only see what's
 committed there.
 
 The templates below are **examples, not requirements**. Copy them to `factory-model/templates/`
-(`verify`, `AGENTS.md`, `toolchain.Containerfile`) as a starting point for new products, and adapt
-them to each product. The factory only depends on the contract: `scripts/verify` exists, runs
-without prompts, and exits `0` when the code is healthy, and `toolchain.Containerfile` builds an
-image it can run in. `bin/check-product` (below) checks exactly that.
+(`verify`, `AGENTS.md`, `toolchain.Containerfile`, `deps`) as a starting point for new products,
+and adapt them to each product. The factory only depends on the contract: `scripts/verify` exists,
+runs without prompts, and exits `0` when the code is healthy, `toolchain.Containerfile` builds an
+image it can run in, and `scripts/deps`, if present, lists the direct dependencies. `bin/check-product` (below) checks exactly that.
 
 #### Template: `scripts/verify`
 
@@ -407,6 +413,9 @@ FROM node:22-bookworm-slim
 # + system packages the build or tests need, for example:
 # RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
 #  && rm -rf /var/lib/apt/lists/*
+# + if the build tool downloads dependencies outside the worktree: pre-fetch them, and declare
+#   the download directories (see "Dependency caches"). Node needs neither: node_modules is in the worktree.
+# LABEL factory.dep-cache="/opt/<tool>-cache"
 ```
 
 The image has to meet these requirements:
@@ -415,14 +424,119 @@ The image has to meet these requirements:
   and the harness layers add binaries that need glibc. Alpine images don't work.
 - **Usable by any user.** The sandbox runs as your user ID with `HOME=/tmp`, so install tools
   system-wide (`/usr/local`, `/opt`), not under `/root` or `~`.
-- **Complete when offline.** Every sandbox call starts with an empty `HOME`, and verify has no
-  network. Anything verify needs that isn't in the worktree has to be in the image. `node_modules`
-  lives in the worktree, so the implementer installs it (see the verify template). Gradle, by
-  contrast, keeps its distribution and dependencies under `~/.gradle`. A Gradle product installs
-  Gradle itself, because `./gradlew` would download its distribution, and pre-fetches
-  dependencies into a read-only cache (`GRADLE_RO_DEP_CACHE`). The build context is the repo
-  root, so the file can `COPY` the build files it needs for that.
+- **Caches at fixed paths.** Point every tool cache at a fixed path with `ENV`, and make it
+  writable by any user (`chmod -R a+rwX`). Don't rely on `~`: JVM tools (Gradle, Maven, sbt) take
+  it from `user.home`, which comes from `/etc/passwd`, not from `$HOME`, and the sandbox's user ID
+  usually has no entry there. Go and Cargo use `$HOME`, which is `/tmp` and empty on every call.
+- **Complete when offline, for `main`.** Every sandbox call starts from the image, and verify has
+  no network. Anything verify needs that isn't in the worktree has to be in the image: the
+  toolchain, the build tool's own distribution (for example the Gradle wrapper's) and the
+  dependencies `main` declares. `node_modules` lives in the worktree, so the implementer installs
+  it (see the verify template). The build context is the repo root, so the file can `COPY` the
+  build files it needs to pre-fetch. Copy only those, so a source change doesn't re-download
+  everything.
+- **Download directories declared.** A task may add a dependency that the image doesn't have.
+  See "Dependency caches" below.
 - **No `ENTRYPOINT` needed.** The factory's base layer clears it, so the sandbox runs commands directly.
+
+#### Dependency caches: new dependencies during a task
+
+The image only holds the dependencies `main` declared when it was built. When a task adds one,
+the implementer downloads it (agent calls have network). For npm that's enough, because
+`node_modules` is in the worktree. Most other build tools download into a cache outside the
+worktree, and each sandbox call is a new container, so the download would be gone by the time
+verify runs offline.
+
+The image therefore declares the directories its build tool downloads into, with a label:
+
+```dockerfile
+LABEL factory.dep-cache="/opt/gradle-home/caches/modules-2"     # absolute paths, space-separated
+```
+
+For each worktree, `bin/sandbox` mounts one volume on each of these directories. The first mount
+fills the volume with the image's content (pre-fetched from `main`). From then on, every call for
+that task (the implementer, verify, the fix rounds, the reviewer) sees the same volume, so a
+dependency downloaded by the implementer is still there for the offline verify. Tasks never share
+a volume. `bin/dep-cache changes` lists what a task added (`bin/run-task` saves it for the
+review), and `bin/dep-cache drop` removes the volumes once the worktree is merged or thrown away.
+After the merge, the next image build pre-fetches the new dependency like any other.
+
+Declare **only the directories that hold downloaded artifacts**, not the tool's whole home. What's
+in a declared directory carries over from the agent's calls into verify, outside the diff the
+reviewer sees. A Gradle init script in `~/.gradle/init.d/`, for example, could skip the tests.
+Everything outside the declared directories is reset on every call.
+
+| Build tool | `ENV` in the image | `factory.dep-cache` |
+|---|---|---|
+| Gradle | `GRADLE_USER_HOME=/opt/gradle-home` | `/opt/gradle-home/caches/modules-2` |
+| Maven | `MAVEN_OPTS="-Dmaven.repo.local=/opt/m2"` | `/opt/m2` |
+| sbt (coursier) | `COURSIER_CACHE=/opt/coursier` | `/opt/coursier` |
+| Cargo | `CARGO_HOME=/usr/local/cargo` | `/usr/local/cargo/registry /usr/local/cargo/git` |
+| Go | `GOMODCACHE=/opt/gomod` | `/opt/gomod` |
+| npm, pip into a venv in the worktree | — | no label needed |
+
+Only the Gradle row has been tested with this factory. Check the others against your tool's docs.
+
+A Gradle example. The wrapper's Gradle distribution is baked in by running `./gradlew` once, so
+`gradle-wrapper.properties` stays the only place that sets the Gradle version. Gradle has no
+"download everything" command (`dependencies` only prints the tree, and compile tasks skip
+resolution when there are no sources), so an init script resolves every configuration:
+
+```dockerfile
+FROM eclipse-temurin:21-jdk-noble
+ENV GRADLE_USER_HOME=/opt/gradle-home
+WORKDIR /opt/prefetch
+COPY gradlew settings.gradle build.gradle ./
+COPY gradle/ gradle/
+COPY app/build.gradle app/                       # one line per subproject
+RUN printf '%s\n' 'allprojects { tasks.register("resolveAll") { doLast { configurations.findAll { it.canBeResolved }.each { it.resolve() } } } }' > /tmp/resolve.gradle \
+ && ./gradlew --no-daemon -q --init-script /tmp/resolve.gradle resolveAll \
+ && rm -rf /opt/prefetch /tmp/resolve.gradle "$GRADLE_USER_HOME/daemon" \
+ && chmod -R a+rwX "$GRADLE_USER_HOME"
+WORKDIR /
+LABEL factory.dep-cache="/opt/gradle-home/caches/modules-2"
+```
+
+Volumes need a container backend. With `SANDBOX=bwrap` there's no image and no label, so a task
+that adds a dependency outside the worktree can't pass verify there.
+
+#### Template: `scripts/deps`
+
+Shown for a Node project:
+
+```bash
+#!/usr/bin/env bash
+# scripts/deps: the product's direct dependencies, one per line, sorted. Offline, from the repo root.
+set -euo pipefail
+jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]' package.json | sort -u
+```
+
+The rules:
+
+- **Direct dependencies only**, one name per line, with no versions. Use the same names the task
+  files use in `new_dependencies` (Module 4). Version changes are left to the reviewer.
+- **Offline, from the current directory.** The runner runs it in the sandbox with no network, in
+  the worktree, and it reads the build files there. Don't `cd` relative to the script's own path:
+  the runner always runs **`main`'s copy**, so a task can't change how its dependencies are
+  listed.
+- **Read declarations, don't resolve.** It must work before the task's new dependencies are
+  downloaded.
+
+A Gradle version. An init script prints the external dependencies each configuration declares,
+without resolving them (build-script plugins aren't included):
+
+```bash
+#!/usr/bin/env bash
+# scripts/deps: the product's direct dependencies, one per line, sorted. Offline, from the repo root.
+set -euo pipefail
+init=$(mktemp); trap 'rm -f "$init"' EXIT
+cat > "$init" <<'EOF'
+allprojects { tasks.register("listDeps") { doLast {
+  configurations.each { c -> c.dependencies.withType(ExternalModuleDependency).each { println "${it.group}:${it.name}" } }
+} } }
+EOF
+./gradlew -q --offline --no-configuration-cache --init-script "$init" listDeps | sort -u
+```
 
 #### Factory script: `bin/check-product`
 
@@ -480,6 +594,10 @@ else case "${SANDBOX:-docker}" in
   *)             warn "toolchain.Containerfile is not committed on main (only SANDBOX=podman|docker need it)" ;;
 esac; fi
 
+# scripts/deps: recommended; without it, run-task can't check the dependencies a task adds
+if git -C "$p" cat-file -e main:scripts/deps 2>/dev/null; then ok "scripts/deps exists"
+else warn "scripts/deps is not committed on main; only the reviewer will check new dependencies"; fi
+
 # CLAUDE.md -> AGENTS.md, only when some role runs on Claude Code
 routing="$FACTORY_HOME/config/routing.json"
 if [ -s "$routing" ] && jq -e 'any(.roles[]; .harness == "claude")' "$routing" >/dev/null 2>&1; then
@@ -498,7 +616,7 @@ if [ "$run" = 1 ]; then
   else
     wt="${p}-wt/check-product-$$"
     rundir="$FACTORY_HOME/runs/check-product-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$rundir"
-    trap 'git -C "$p" worktree remove --force "$wt" 2>/dev/null || true' EXIT
+    trap '"$FACTORY_HOME/bin/dep-cache" drop "$wt" || true; git -C "$p" worktree remove --force "$wt" 2>/dev/null || true' EXIT
     git -C "$p" worktree add -q --detach "$wt" main
     start=$SECONDS
     if "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- scripts/verify > "$rundir/verify.log" 2>&1; then
@@ -508,6 +626,14 @@ if [ "$run" = 1 ]; then
       tail -n 20 "$rundir/verify.log" | sed 's/^/      /'
     fi
     [ $((SECONDS - start)) -le 120 ] || warn "verify took over 2 minutes; consider scripts/verify --quick"
+    if git -C "$p" cat-file -e main:scripts/deps 2>/dev/null; then
+      if n=$("$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- bash scripts/deps 2>"$rundir/deps.log" | wc -l) \
+         && [ "$n" -gt 0 ]; then
+        ok "scripts/deps lists $n dependencies, offline"
+      else
+        fail "scripts/deps failed or printed nothing in a fresh offline worktree (log: $rundir/deps.log)"
+      fi
+    fi
   fi
 fi
 
@@ -525,7 +651,8 @@ bin/check-product --run ~/projects/<product>    # + verify, sandboxed and offlin
 If `--run` fails only because dependencies are missing, that's also what the first verify in
 `bin/run-task` sees: a fresh worktree has none, and verify runs offline. The implementer runs with
 network access before verify, so it can install the ones that live in the worktree. The template's
-message tells it how. Dependencies outside the worktree have to come with the toolchain image.
+message tells it how. Dependencies outside the worktree come with the toolchain image, so a
+`--run` failure about them means the image doesn't pre-fetch everything `main` declares.
 
 ### Harness-specific steps
 
@@ -621,6 +748,7 @@ script has to translate paths:
 | run directory | read-write | Briefs, logs, sessions, reports |
 | repo's shared `.git` | read-only | Lets `git status` and `git diff` work inside the worktree, but not rewrite history |
 | this worktree's own git dir | read-write | Its index and HEAD |
+| one volume per `factory.dep-cache` directory, per worktree | read-write | Dependencies a task downloads survive until its offline verify (Module 1, "Dependency caches") |
 
 `config/sandbox-env` lists the **names** of the variables allowed in, one per line:
 
@@ -667,6 +795,17 @@ case "$mode" in
           -v "$FACTORY_HOME:$FACTORY_HOME:ro" -v "$wt:$wt" -v "$rundir:$rundir"
           -v "$common:$common:ro" -v "$own:$own")
     [ "$net" = none ] && args+=(--network none)
+    # dependency caches: one volume per directory in the image's factory.dep-cache label, per
+    # worktree. The first mount fills it from the image; what an agent downloads later (with
+    # network) is still there for the offline verify. bin/dep-cache reports and removes them.
+    wtabs=$(cd "$wt" && pwd); i=0
+    for dir in $("$mode" image inspect -f '{{index .Config.Labels "factory.dep-cache"}}' "$image" 2>/dev/null); do
+      vol="factory-dep-$product-$(basename "$wtabs" | tr -c 'a-zA-Z0-9_.\n-' -)-$i"
+      "$mode" volume inspect "$vol" >/dev/null 2>&1 \
+        || "$mode" volume create --label "factory.worktree=$wtabs" --label "factory.image=$image" \
+             --label "factory.dir=$dir" "$vol" >/dev/null
+      args+=(-v "$vol:$dir"); i=$((i + 1))
+    done
     if [ "$mode" = podman ]; then args+=(--userns=keep-id)          # files stay owned by you
     else args+=(--user "$(id -u):$(id -g)"); fi
     for n in "${names[@]}"; do [ -n "${!n:-}" ] && args+=(-e "$n"); done
@@ -786,8 +925,62 @@ looks for `Dockerfile` by default, which is why `bin/build-worker` passes `-f` e
 **Rebuild** after the product changes `toolchain.Containerfile` (or the dependencies it
 pre-fetches) on `main`, after you change the base layer or a harness version, and after
 `config/routing.json` starts using another harness. Builds are cached, and a change only rebuilds
-its own layer and the ones above it. `fan-out` doesn't build images. If the image is missing,
-the first sandbox call fails with an "image not found" error.
+its own layer and the ones above it. `bin/fan-out` (Module 6) runs `build-worker` before every
+batch, so the image always matches `main`. That's cheap when nothing changed. Before Module 6,
+rebuild by hand. If the image is missing, the first sandbox call fails with an "image not found"
+error.
+
+`bin/dep-cache` manages the dependency-cache volumes `bin/sandbox` creates. It finds them by the
+labels `bin/sandbox` puts on them, so `drop` still works after the worktree is gone:
+
+```bash
+#!/usr/bin/env bash
+# usage: dep-cache changes|drop <worktree>
+# The dependency-cache volumes bin/sandbox mounts for one worktree (see the factory.dep-cache label).
+#   changes  lists files added to or changed in them, compared with the worker image, one per line:
+#            "added <path>" or "changed <path>". Empty when the task fetched nothing.
+#   drop     removes them. Run it when the worktree is merged or thrown away.
+# Does nothing for SANDBOX=bwrap|none, which mount no volumes.
+set -euo pipefail
+export LC_ALL=C                                 # sort and join must agree on the order
+mode="${SANDBOX:-docker}"
+[ $# -eq 2 ] || { echo "usage: dep-cache changes|drop <worktree>" >&2; exit 2; }
+cmd=$1; wt=$(realpath -m "$2")
+case "$mode" in podman|docker) ;; *) exit 0 ;; esac
+
+mapfile -t vols < <("$mode" volume ls -q --filter "label=factory.worktree=$wt")
+[ ${#vols[@]} -gt 0 ] || exit 0
+
+label() { "$mode" volume inspect -f "{{index .Labels \"$2\"}}" "$1"; }
+# sums <dir> [run options...] <image>: sha256 of every file under <dir>, in the image, offline
+sums() { local d=$1; shift
+  "$mode" run --rm --network none -e LC_ALL=C "$@" sh -c 'cd "$0" && find . -type f -exec sha256sum {} + | sort -k2' "$d"; }
+
+case "$cmd" in
+  changes)
+    for vol in "${vols[@]}"; do
+      image=$(label "$vol" factory.image); dir=$(label "$vol" factory.dir)
+      # join on the path: present only in the volume = added, different hash = changed
+      join -1 2 -2 2 -a 2 -e - -o 0,1.1,2.1 \
+          <(sums "$dir" "$image") <(sums "$dir" -v "$vol:$dir:ro" "$image") \
+        | awk -v d="$dir" '$2 == "-" { print "added   " d substr($1, 2); next }
+                           $2 != $3  { print "changed " d substr($1, 2) }'
+    done ;;
+  drop)
+    "$mode" volume rm "${vols[@]}" >/dev/null ;;
+  *)
+    echo "usage: dep-cache changes|drop <worktree>" >&2; exit 2 ;;
+esac
+```
+
+```bash
+chmod +x bin/dep-cache
+bin/dep-cache changes ~/projects/<product>-wt/<task-id>    # what the task downloaded
+bin/dep-cache drop ~/projects/<product>-wt/<task-id>       # after merging or discarding it
+```
+
+`changes` also lists the build tool's own bookkeeping files (for Gradle, a few files under
+`metadata-*/` and `*.lock`), which change whenever it resolves anything.
 
 **Network.** `--net none` cuts all network access. The runner uses it for `scripts/verify`, so tests can't
 send data out. If your tests need a database, run it as a service the sandbox can reach, or add
@@ -829,9 +1022,18 @@ fi
 exit 0
 ```
 
-`guards/files.sh`: same shape, takes a file path, and blocks `.env*`, lockfiles, migrations that
-have already run, and **harness config inside the worktree** (`.pi/`, `.claude/`, `.codex/`,
-`.agents/`, `.agent/`, `.mcp.json`). An agent that writes harness config could change how the next run behaves.
+`guards/files.sh`: same shape, takes a file path, and blocks:
+
+- `.env*` files.
+- **Hand edits of lockfiles** (`package-lock.json`, `yarn.lock`, `gradle.lockfile`, `Cargo.lock`…).
+  The guard only sees the agent's file-edit tools, so a package manager run through bash can still
+  update a lockfile. That's the point: dependencies change through the package manager, never as
+  hand-written lockfile text. A model writing lockfiles by hand produces versions, hashes and
+  download URLs that look right but aren't, in a diff too long for anyone to read. Whether a task
+  may add a dependency at all is decided by its task file and checked by the runner (Module 3).
+- Migrations that have already run.
+- **Harness config inside the worktree** (`.pi/`, `.claude/`, `.codex/`, `.agents/`, `.agent/`,
+  `.mcp.json`). An agent that writes harness config could change how the next run behaves.
 
 **Always block with exit code `2`.** Claude Code and Codex treat any other non-zero exit as a
 hook error and let the action through. Pi's adapter checks for any non-zero exit, but use `2`
@@ -1395,12 +1597,24 @@ what is installed on the machine.
 #!/usr/bin/env bash
 # usage: run-task <worktree> <task-file> <run-dir>   (task-file: a path inside the worktree)
 set -euo pipefail
+export LC_ALL=C                                 # sort and comm must agree on the order
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
 wt=$1; task=$2; rundir=$3; mkdir -p "$rundir"
 run() { "$FACTORY_HOME/bin/agent-run" "$@"; }
 verify() { "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- scripts/verify > "$rundir/verify.log" 2>&1; }
+deps() { "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- bash "$rundir/deps.sh" 2>"$rundir/deps.log" | sort -u; }
 
-printf 'Complete the task in %s. Write REPORT.md as it specifies.\n' "$task" > "$rundir/brief.md"
+# dependency gate, part 1 (skipped if the product has no scripts/deps): main's copy of the script
+# and main's copy of the task file, so the task can't change either. What main declares, and what
+# the task may add.
+gate=0
+if git -C "$wt" show main:scripts/deps > "$rundir/deps.sh" 2>/dev/null && deps > "$rundir/deps.before"; then gate=1; fi
+git -C "$wt" show "main:${task#"$wt"/}" | sed -n 's/^new_dependencies: *\[\(.*\)\].*/\1/p' \
+  | tr ',' '\n' | sed 's/^[ "]*//; s/[ "]*$//' | { grep -v '^$' || true; } | sort -u > "$rundir/deps.allowed"
+
+{ printf 'Complete the task in %s. Write REPORT.md as it specifies.\n' "$task"
+  printf 'Add only the dependencies its new_dependencies lists. If you need another one, do not add it: explain why under open questions in REPORT.md.\n'
+} > "$rundir/brief.md"
 run implementer "$wt" "$rundir/brief.md" "$rundir" || true
 
 status=red
@@ -1411,11 +1625,40 @@ for role in implementer implementer implementer-strong; do      # 2 fix rounds, 
   else run "$role" "$wt" "$rundir/fix.md" "$rundir" || true; fi
 done
 [ $status = red ] && verify && status=green
+
+# dependency gate, part 2: direct dependencies the task added but its task file doesn't declare
+if [ $status = green ] && [ $gate = 1 ]; then
+  if deps > "$rundir/deps.after"; then
+    comm -13 "$rundir/deps.before" "$rundir/deps.after" > "$rundir/deps.added"
+    comm -23 "$rundir/deps.added" "$rundir/deps.allowed" > "$rundir/deps.undeclared"
+    [ -s "$rundir/deps.undeclared" ] && status=undeclared-deps
+  else
+    status=red                                  # scripts/deps failed: see deps.log
+  fi
+fi
 echo "$status" > "$rundir/status"
+"$FACTORY_HOME/bin/dep-cache" changes "$wt" > "$rundir/dep-cache.txt" || true   # dependencies the task downloaded
 ```
 
 The gate is outside the harness, so it works the same with any model. The model can't declare
 itself done. Only `scripts/verify` decides.
+
+**New dependencies are decided before the task runs, not by the implementer.** The planner lists
+them in the task file's `new_dependencies` (Module 4), and you approve them when you commit the
+task. The implementer adds them through the package manager (`guards/files.sh` blocks hand edits
+of lockfiles), and the task's dependency-cache volume keeps the downloads for the offline verify
+(Module 1, "Dependency caches"). After verify passes, the runner runs `scripts/deps` again. A
+direct dependency the task file doesn't declare sets the status to `undeclared-deps`, and the task
+is neither committed nor reviewed. The orchestrator then either rewrites the task or asks you to
+approve the dependency.
+
+Both the script and the list come from `main`, not from the worktree, because the agent can edit
+anything in the worktree. Run-dir files: `deps.added` (what the task added, for the reviewer and
+for you) and `deps.undeclared` (why the gate failed). `dep-cache.txt` records every file
+downloaded, including indirect dependencies.
+
+The gate only sees direct dependencies. Indirect ones, version changes, and build plugins are
+left to the reviewer, using `diff.patch` and `dep-cache.txt`.
 
 **Try it:** give one small task to `run-task` on a fresh worktree. Then break the task on purpose
 (ask for something the tests will reject) and watch the fix rounds and the escalation happen.
@@ -1442,6 +1685,7 @@ id: 012-csv-export
 spec: docs/specs/004-reporting.md
 depends_on: []
 touches: [src/reports/, src/api/export.ts]   # used to spot parallel conflicts
+new_dependencies: []   # direct dependencies this task may add, named as scripts/deps prints them; keep it on one line
 ---
 ## Goal
 One or two sentences.
@@ -1464,6 +1708,23 @@ frontmatter), which Pi and many other harnesses support:
   `docs/specs/NNN-name/tasks/`. Rules for it: each task fits in one session, can be checked on
   its own, lists its `touches`, and sets `depends_on` honestly. It flags tasks whose `touches`
   overlap. It can use the `scout` role, through `bin/agent-run`, to summarize unfamiliar code.
+  It fills in `new_dependencies` (see below).
+
+**New dependencies are a planning decision.** The `plan` skill decides which direct dependencies
+each task may add and lists them in `new_dependencies`. It prefers what the product already uses
+and says in the task's Context why each new one is needed. You approve the list when you review
+and commit the task files. That's the human decision, made once and cheaply, before any agent
+runs. The runner enforces it (Module 3).
+
+Give a dependency **its own task** when it's big or risky (a new framework, anything with install
+scripts or build plugins), or when several tasks of the spec need it:
+
+1. A dependency task adds only the dependency and its configuration. It's merged first.
+2. Rebuild the worker image (`bin/build-worker`), so the image pre-fetches it from `main`.
+3. The feature tasks `depends_on` it and declare no new dependencies.
+
+Parallel tasks then never edit the same manifest and lockfile, and the dependency gets a review of
+its own instead of hiding inside a feature diff.
 
 Run both interactively with the planner's model, in any harness.
 
@@ -1517,14 +1778,20 @@ Then read every task file and ask yourself: *"Could a new contractor do this fro
 if [ $status = green ]; then
   git -C "$wt" add -A && git -C "$wt" commit -qm "factory: $(basename "$task" .md)"
   git -C "$wt" diff main...HEAD > "$rundir/diff.patch"
-  printf 'Task: %s\nDiff: %s\n' "$task" "$rundir/diff.patch" > "$rundir/review-brief.md"
+  printf 'Task: %s\nDiff: %s\nAdded dependencies: %s\nDownloaded files: %s\n' \
+    "$task" "$rundir/diff.patch" "$rundir/deps.added" "$rundir/dep-cache.txt" > "$rundir/review-brief.md"
   run reviewer "$wt" "$rundir/review-brief.md" "$rundir" || true
   head -1 "$rundir/reviewer.out.md"                    # VERDICT: …
 fi
 ```
 
 The runner commits and builds the diff, so the reviewer needs no write or bash tools. Its
-read-only access is enforced by `routing.json`, not by asking nicely.
+read-only access is enforced by `routing.json`, not by asking nicely. The runner has already
+checked that every added direct dependency is declared in the task file. The reviewer role checks
+what a script can't: is each new dependency really needed, is the name exactly right (models
+invent plausible names, and attackers register them), is it maintained, are version changes and
+build plugins in the diff justified, and does `dep-cache.txt` hold nothing the diff doesn't
+explain.
 
 The easiest way to get a different family is a different **harness**: implementer on Claude
 Code, reviewer on Codex, or the other way round. Pi can serve either side.
@@ -1583,7 +1850,11 @@ status and a review verdict. **You read reports, not transcripts.**
 set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
 PRODUCT="$(cd "$1" && pwd)"; shift
-RUN="$FACTORY_HOME/runs/$(date +%Y%m%d-%H%M%S)"
+RUN="$FACTORY_HOME/runs/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$RUN"
+case "${SANDBOX:-docker}" in                     # keep the worker image in step with main
+  podman|docker) "$FACTORY_HOME/bin/build-worker" "$PRODUCT" > "$RUN/build-worker.log" 2>&1 \
+                   || { echo "build-worker failed, see $RUN/build-worker.log" >&2; exit 1; } ;;
+esac
 for task in "$@"; do
   id=$(basename "$task" .md); wt="${PRODUCT}-wt/$id"
   git -C "$PRODUCT" worktree add -q -b "factory/$id" "$wt" main
@@ -1598,9 +1869,10 @@ through `bin/sandbox`, so each worktree gets its own isolated sandbox. Task file
 committed on `main` before fan-out, so each worktree contains its own copy. That copy is the
 path the agent is given, because it's the only one mounted in the sandbox.
 
-**Build** `bin/collect`: for each task in a run, print the id, the status (green or red), the review
-verdict, the `REPORT.md` summary and open questions, the diff stat, and the models used (from
-`calls.log`). This is your dashboard.
+**Build** `bin/collect`: for each task in a run, print the id, the status (`green`, `red` or
+`undeclared-deps`), the review verdict, the `REPORT.md` summary and open questions, the diff stat,
+the direct dependencies it added (`deps.added`, and `deps.undeclared` if any), and the models used
+(from `calls.log`). This is your dashboard.
 
 Rules:
 - Only run tasks together if their `touches` don't overlap and they don't depend on each other.
@@ -1658,10 +1930,12 @@ the design rules, it only *calls* the scripts and makes the judgments:
 1. Reads the task files and builds batches from `depends_on` and `touches`.
 2. Runs `bin/fan-out` for each batch and `bin/collect` afterwards.
 3. Triages the results. It answers questions it can answer from the spec, rewrites unclear task
-   files, and re-queues failures.
+   files, and re-queues failures. For `undeclared-deps`, it either rewrites the task so the
+   dependency isn't needed, or asks you to approve it. Once you do, it adds the dependency to the
+   task's `new_dependencies` on `main` and re-queues the task.
 4. Shows **you** only: branches ready to merge, questions that need you, and escalations.
-5. **Human gate:** it never merges. You merge, then clean up with `git worktree remove` and
-   delete the branch.
+5. **Human gate:** it never merges. You merge, then clean up with `git worktree remove`,
+   `bin/dep-cache drop <worktree>`, and delete the branch.
 
 The same flow runs in any harness that can read a skill and run bash, so the orchestrator
 isn't tied to Pi either.

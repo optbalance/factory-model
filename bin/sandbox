@@ -28,6 +28,17 @@ case "$mode" in
           -v "$FACTORY_HOME:$FACTORY_HOME:ro" -v "$wt:$wt" -v "$rundir:$rundir"
           -v "$common:$common:ro" -v "$own:$own")
     [ "$net" = none ] && args+=(--network none)
+    # dependency caches: one volume per directory in the image's factory.dep-cache label, per
+    # worktree. The first mount fills it from the image; what an agent downloads later (with
+    # network) is still there for the offline verify. bin/dep-cache reports and removes them.
+    wtabs=$(cd "$wt" && pwd); i=0
+    for dir in $("$mode" image inspect -f '{{index .Config.Labels "factory.dep-cache"}}' "$image" 2>/dev/null); do
+      vol="factory-dep-$product-$(basename "$wtabs" | tr -c 'a-zA-Z0-9_.\n-' -)-$i"
+      "$mode" volume inspect "$vol" >/dev/null 2>&1 \
+        || "$mode" volume create --label "factory.worktree=$wtabs" --label "factory.image=$image" \
+             --label "factory.dir=$dir" "$vol" >/dev/null
+      args+=(-v "$vol:$dir"); i=$((i + 1))
+    done
     if [ "$mode" = podman ]; then args+=(--userns=keep-id)          # files stay owned by you
     else args+=(--user "$(id -u):$(id -g)"); fi
     for n in "${names[@]}"; do [ -n "${!n:-}" ] && args+=(-e "$n"); done

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# scripts/deps: the product's direct dependencies, one per line, sorted. Offline, from the repo root.
+set -euo pipefail
+jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]' package.json | sort -u
