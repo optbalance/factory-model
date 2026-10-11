@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
-# scripts/deps: the product's direct dependencies, one per line, sorted. Offline, from the repo root.
+# scripts/deps: the product's direct dependencies with their declared versions, one per line, sorted.
+# Offline, from the current directory. The runner compares its output before and after each task.
 set -euo pipefail
-jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]' package.json | sort -u
+jq -r '(.dependencies // {}) + (.devDependencies // {}) | to_entries[] | "\(.key)@\(.value)"' package.json | sort -u

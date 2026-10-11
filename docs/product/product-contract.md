@@ -13,9 +13,8 @@ to the product. Everything here lives in the **product** repo.
 | 4 | `scripts/verify` | `templates/verify` | always |
 | 5 | `docs/specs/` | — | always |
 | 6 | `toolchain.Containerfile` | `templates/toolchain.Containerfile` | with `SANDBOX=docker` (default) or `podman` |
-| 7 | `factory.dep-cache` label in the image | `templates/toolchain.Containerfile` | if the build tool downloads dependencies outside the worktree |
-| 8 | `scripts/deps` | `templates/deps` | recommended |
-| 9 | Commit on `main` and check | — | always |
+| 7 | `scripts/deps` | `templates/deps` | if dependencies install into the worktree (npm, a venv); recommended otherwise |
+| 8 | Commit on `main` and check | — | always |
 
 ---
 
@@ -40,7 +39,8 @@ built from `main`. Uncommitted or unmerged work is invisible to the factory.
 - definition of done: work is done only when `scripts/verify` exits 0; tests are never weakened,
   skipped or deleted to make it pass;
 - conventions the linter doesn't enforce;
-- "never touch" areas: generated code, applied migrations, public contracts;
+- "never touch" areas: generated code, applied migrations, public contracts, and dependency
+  declarations and lockfiles (dependency changes land on `main` before tasks run);
 - links to deeper docs instead of their content.
 
 Keep it under about 150 lines and write it for any model, with no provider-specific tricks.
@@ -104,7 +104,17 @@ must be:
   (`/usr/local`, `/opt`), never under `/root` or `~`.
 - **Using fixed cache paths.** Point every tool cache at a fixed path with `ENV`, and make it
   writable by any user (`chmod -R a+rwX`). JVM tools take `~` from `/etc/passwd`, not `$HOME`, and
-  the sandbox user usually has no entry there.
+  the sandbox user usually has no entry there. Examples (only Gradle is tested):
+
+  | Build tool | `ENV` in the image |
+  |---|---|
+  | Gradle | `GRADLE_USER_HOME=/opt/gradle-home` |
+  | Maven | `MAVEN_OPTS="-Dmaven.repo.local=/opt/m2"` |
+  | sbt (coursier) | `COURSIER_CACHE=/opt/coursier` |
+  | Cargo | `CARGO_HOME=/usr/local/cargo` |
+  | Go | `GOMODCACHE=/opt/gomod` |
+  | npm, pip into a venv in the worktree | nothing: they install into the worktree |
+
 - **Complete offline for `main`.** The toolchain, the build tool's own distribution (for example
   the Gradle wrapper's) and every dependency `main` declares are in the image. To pre-fetch, `COPY`
   only the build files (not the sources), so a source change doesn't trigger a re-download.
@@ -114,64 +124,37 @@ If the product already has a CI or dev-container image that meets these points, 
 a single `FROM` line pointing at it.
 
 **Why:** the factory knows nothing about the product's stack and never installs it. Everything
-that runs in a sandbox (agents and verify) runs in this image.
+that runs in a sandbox (agents and verify) runs in this image. Tasks never change dependencies:
+approved changes are committed on `main` first, and the factory rebuilds this image from `main`
+before every batch, so it always holds what the tasks need.
 
 **Template:** `templates/toolchain.Containerfile` (Node). A Gradle example is in
-`docs/building-the-factory.md`, Module 1, "Dependency caches".
+`docs/building-the-factory.md`, Module 1, after the template.
 
-## Step 7. Declare dependency download directories
+## Step 7. `scripts/deps`
 
-**What:** if the build tool downloads dependencies outside the worktree, add a label listing the
-directories it downloads into (absolute paths, space-separated):
-
-```dockerfile
-LABEL factory.dep-cache="/opt/gradle-home/caches/modules-2"
-```
-
-List **only the directories holding downloaded artifacts**, never the tool's whole home: anything
-in them carries over from the agent's calls into verify, outside the diff a reviewer sees.
-
-| Build tool | `ENV` in the image | `factory.dep-cache` |
-|---|---|---|
-| Gradle | `GRADLE_USER_HOME=/opt/gradle-home` | `/opt/gradle-home/caches/modules-2` |
-| Maven | `MAVEN_OPTS="-Dmaven.repo.local=/opt/m2"` | `/opt/m2` |
-| sbt (coursier) | `COURSIER_CACHE=/opt/coursier` | `/opt/coursier` |
-| Cargo | `CARGO_HOME=/usr/local/cargo` | `/usr/local/cargo/registry /usr/local/cargo/git` |
-| Go | `GOMODCACHE=/opt/gomod` | `/opt/gomod` |
-| npm, pip into a venv in the worktree | — | no label needed |
-
-Only the Gradle row is tested.
-
-**Why:** a task may add a dependency the image doesn't have. The agent downloads it while it has
-network, and the factory keeps these directories per task so the offline verify still finds it.
-Without the label the download is lost and verify fails.
-
-**Template:** `templates/toolchain.Containerfile` (the commented `LABEL` line).
-
-## Step 8. `scripts/deps`
-
-**What:** a script that prints the product's direct dependencies, one name per line, sorted, with
-no versions. It must:
+**What:** a script that prints the product's direct dependencies with their declared versions,
+one per line, sorted. It must:
 
 - read the build files in the **current directory** (the runner runs it from the worktree root),
   and not `cd` relative to its own path;
-- run **offline**, and read declarations without resolving them, so it works before a new
-  dependency is downloaded;
-- print names exactly as task files write them in `new_dependencies` (for example
-  `com.squareup.okhttp3:okhttp` for Gradle, `express` for npm).
+- run **offline**, and read declarations without resolving them, so it still works when a task
+  declared a dependency the image doesn't have;
+- change its output whenever a dependency is added, removed, or changes version.
 
 It doesn't need the executable bit: the runner runs it with `bash`.
 
-**Why:** new dependencies are decided when the task is planned, and you approve them when you
-commit the task file. The runner runs this script before and after each task. A direct
-dependency the task added but its task file doesn't declare stops the task before commit and
-review. The runner always uses `main`'s copy, so a task can't change how dependencies are
-listed. Without the script, only the reviewer checks new dependencies.
+**Why:** tasks never change dependencies; changes are planned, approved, and committed on `main`
+before the tasks run. The runner runs `main`'s copy of this script before and after each task and
+stops a task whose output changed (status `deps-changed`). It's required when dependencies install
+into the worktree (npm, a venv): an agent could install one there, and verify would still pass.
+For build tools that download outside the worktree, verify already fails offline on a dependency
+the image doesn't have; the script turns that into a clear status instead of wasted fix rounds.
 
 **Template:** `templates/deps` (npm). A Gradle version is in `docs/building-the-factory.md`,
 Module 1, "Template: `scripts/deps`".
 
-## Step 9. Commit on `main` and check
+## Step 8. Commit on `main` and check
 
 **What:** commit everything above on `main`, then run from the factory:
 
