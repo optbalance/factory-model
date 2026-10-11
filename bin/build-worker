@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# usage: build-worker <product-dir> [harness...]
+# Builds the worker image for one product, one layer at a time, each FROM the previous one:
+#   toolchain   the product's toolchain.Containerfile, as committed on main
+#   base        the factory base layer, sandbox/Containerfile
+#   <harness>   adapters/<harness>/Containerfile, for each harness named (default: those in config/routing.json)
+# Layers are tagged factory-worker-<product>:<layer>; the last is also tagged :latest, which bin/sandbox runs.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+engine="${SANDBOX:-docker}"
+case "$engine" in
+  podman|docker) ;;
+  *) echo "build-worker: SANDBOX=$engine uses no image" >&2; exit 2 ;;
+esac
+[ $# -ge 1 ] || { echo "usage: build-worker <product-dir> [harness...]" >&2; exit 2; }
+p="$(cd "$1" && pwd)"; shift
+product=$(basename "$p"); product=${product,,}; product=${product//[^a-z0-9._-]/-}   # as in bin/sandbox
+
+harnesses=("$@")
+routing="$FACTORY_HOME/config/routing.json"
+if [ ${#harnesses[@]} -eq 0 ] && [ -s "$routing" ]; then
+  mapfile -t harnesses < <(jq -r '[.roles[].harness] | unique[]' "$routing")
+fi
+[ ${#harnesses[@]} -gt 0 ] \
+  || { echo "build-worker: name the harnesses, or list them in config/routing.json" >&2; exit 2; }
+for h in "${harnesses[@]}"; do
+  [ -f "$FACTORY_HOME/adapters/$h/Containerfile" ] \
+    || { echo "build-worker: adapters/$h/Containerfile is missing" >&2; exit 2; }
+done
+
+# build from main, like fan-out: uncommitted changes never reach the image
+src=$(mktemp -d); trap 'rm -rf "$src"' EXIT
+git -C "$p" archive main | tar -x -C "$src"
+[ -f "$src/toolchain.Containerfile" ] \
+  || { echo "build-worker: toolchain.Containerfile is not committed on main in $p" >&2; exit 1; }
+
+img="factory-worker-$product"
+"$engine" build -t "$img:toolchain" -f "$src/toolchain.Containerfile" "$src"
+prev=toolchain
+for layer in base "${harnesses[@]}"; do
+  if [ "$layer" = base ]; then dir="$FACTORY_HOME/sandbox"; else dir="$FACTORY_HOME/adapters/$layer"; fi
+  "$engine" build -t "$img:$layer" --build-arg BASE_IMAGE="$img:$prev" -f "$dir/Containerfile" "$dir"
+  prev=$layer
+done
+"$engine" tag "$img:$prev" "$img:latest"
+echo "Built $img: toolchain, base, ${harnesses[*]}"

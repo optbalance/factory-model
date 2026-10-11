@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# scripts/verify: the product's one health check. Exit 0 = healthy.
+# usage: scripts/verify [--quick]
+# Runs non-interactively and offline: the factory runs it in a sandbox with no network.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+export CI=true                     # most tools then skip prompts, colors and watch mode
+quick=0; [ "${1:-}" = --quick ] && quick=1
+log=$(mktemp); trap 'rm -f "$log"' EXIT
+
+# step <name> <command...>: one line on success; on failure, the command and the end of its
+# output, then stop. One failure at a time keeps the output short enough for an agent to act on.
+step() {
+  local name=$1; shift
+  if "$@" >"$log" 2>&1; then
+    echo "ok    $name"
+  else
+    echo "FAIL  $name: $*"
+    tail -n 50 "$log"
+    exit 1
+  fi
+}
+
+# A fresh worktree has no installed dependencies, and verify can't download them.
+[ -d node_modules ] || { echo "FAIL  dependencies: node_modules is missing. Run 'npm ci' first (needs network)."; exit 1; }
+
+step lint       npm run --silent lint
+step typecheck  npm run --silent typecheck
+if [ "$quick" = 1 ]; then
+  step "unit tests" npm run --silent test:unit
+else
+  step tests      npm test --silent
+fi
+echo "verify: all checks passed"

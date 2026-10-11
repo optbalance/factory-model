@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# usage: check-factory
+# Checks that the factory has the Module 0 layout (docs/building-the-factory.md) and creates
+# whatever is missing: directories empty, files empty. adapters/ is only checked as a directory;
+# its content depends on which harnesses you use.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$FACTORY_HOME"
+
+dirs=(config sandbox roles skills guards bin adapters templates evals runs docs)
+files=(
+  AGENTS.md
+  package.json
+  config/routing.json
+  config/sandbox-env
+  sandbox/Containerfile
+  docs/from-conductor-to-orchestrator.md
+  docs/building-the-factory.md
+  docs/how-the-factory-works.md
+  docs/factory-log.md
+)
+
+created=()
+for d in "${dirs[@]}"; do
+  [ -d "$d" ] || { mkdir -p "$d"; created+=("$d/"); }
+done
+for f in "${files[@]}"; do
+  [ -e "$f" ] || { mkdir -p "$(dirname "$f")"; touch "$f"; created+=("$f"); }
+done
+
+if [ ${#created[@]} -eq 0 ]; then
+  echo "All good, structure complete"
+else
+  echo "Following directories and files were created:"
+  printf '%s\n' "${created[@]}"
+fi

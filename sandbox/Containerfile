@@ -1,0 +1,10 @@
+# Factory base layer: what the factory core needs in every worker (git for the agents, jq for the
+# hook wrappers, curl for installers). Built FROM a product's toolchain image by bin/build-worker.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git jq ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT []
+CMD ["bash"]
