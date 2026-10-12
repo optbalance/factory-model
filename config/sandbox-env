@@ -1,0 +1,3 @@
+# names (never values) of the env vars allowed into the sandbox; values come from the host env
+# Claude Code on a subscription: token from `claude setup-token`
+CLAUDE_CODE_OAUTH_TOKEN

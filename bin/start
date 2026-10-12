@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# usage: start <command> [args...]      e.g. bin/start claude
+# Runs <command> (the orchestrator session, or a factory script) with the factory's secrets in its
+# environment. Everything it starts inherits them, and bin/sandbox passes on the names listed in
+# config/sandbox-env. Values: NAME=value lines in $FACTORY_ENV (default ~/.config/factory/env), mode 600.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
+envfile="${FACTORY_ENV:-$HOME/.config/factory/env}"
+[ $# -ge 1 ] || { echo "usage: start <command> [args...]   e.g. start claude" >&2; exit 2; }
+[ -r "$envfile" ] \
+  || { echo "start: $envfile not found. Create it with mode 600 (docs/building-the-factory.md, Module 2)" >&2; exit 1; }
+[ -z "$(find "$envfile" -perm /077)" ] \
+  || echo "start: $envfile is readable by other users; run: chmod 600 $envfile" >&2
+set -a; . "$envfile"; set +a
+exec "$@"

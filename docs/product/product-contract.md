@@ -100,11 +100,16 @@ builds it from `main` with the repo root as build context, and adds its own laye
 must be:
 
 - **Debian- or Ubuntu-based.** Alpine doesn't work.
+- **Using fully qualified image names** (`FROM docker.io/library/eclipse-temurin:21-jdk-noble`, not
+  `eclipse-temurin:21-jdk-noble`). Docker assumes `docker.io` for a short name; Podman refuses it
+  unless the host's `registries.conf` lists a search registry.
 - **Usable by any user.** Commands run as your user ID with `HOME=/tmp`. Install tools system-wide
   (`/usr/local`, `/opt`), never under `/root` or `~`.
 - **Using fixed cache paths.** Point every tool cache at a fixed path with `ENV`, and make it
-  writable by any user (`chmod -R a+rwX`). JVM tools take `~` from `/etc/passwd`, not `$HOME`, and
-  the sandbox user usually has no entry there. Examples (only Gradle is tested):
+  writable by any user (`chmod -R a+rwX`). Don't rely on `~`: JVM tools (Gradle, Maven, sbt) take
+  it from `user.home`, which comes from `/etc/passwd`, not from `$HOME`, and the sandbox's user ID
+  usually has no entry there. Go and Cargo use `$HOME`, which is `/tmp` and empty on every call.
+  Examples (only Gradle is tested):
 
   | Build tool | `ENV` in the image |
   |---|---|
@@ -118,6 +123,8 @@ must be:
 - **Complete offline for `main`.** The toolchain, the build tool's own distribution (for example
   the Gradle wrapper's) and every dependency `main` declares are in the image. To pre-fetch, `COPY`
   only the build files (not the sources), so a source change doesn't trigger a re-download.
+  `node_modules` and a venv live in the worktree instead: the implementer installs them, and
+  verify names the install command when they're missing (Step 4).
 - **Free of `ENTRYPOINT` requirements.** The factory clears it and runs commands directly.
 
 If the product already has a CI or dev-container image that meets these points, the file can be
@@ -128,8 +135,29 @@ that runs in a sandbox (agents and verify) runs in this image. Tasks never chang
 approved changes are committed on `main` first, and the factory rebuilds this image from `main`
 before every batch, so it always holds what the tasks need.
 
-**Template:** `templates/toolchain.Containerfile` (Node). A Gradle example is in
-`docs/building-the-factory.md`, Module 1, after the template.
+With `SANDBOX=bwrap` there's no image: the toolchain and `main`'s dependencies have to be on the
+host, in paths listed in `SANDBOX_RO_PATHS`.
+
+**Template:** `templates/toolchain.Containerfile` (Node).
+
+A Gradle example. The wrapper's Gradle distribution is baked in by running `./gradlew` once, so
+`gradle-wrapper.properties` stays the only place that sets the Gradle version. Gradle has no
+"download everything" command (`dependencies` only prints the tree, and compile tasks skip
+resolution when there are no sources), so an init script resolves every configuration:
+
+```dockerfile
+FROM docker.io/library/eclipse-temurin:21-jdk-noble
+ENV GRADLE_USER_HOME=/opt/gradle-home
+WORKDIR /opt/prefetch
+COPY gradlew settings.gradle build.gradle ./
+COPY gradle/ gradle/
+COPY app/build.gradle app/                       # one line per subproject
+RUN printf '%s\n' 'allprojects { tasks.register("resolveAll") { doLast { configurations.findAll { it.canBeResolved }.each { it.resolve() } } } }' > /tmp/resolve.gradle \
+ && ./gradlew --no-daemon -q --init-script /tmp/resolve.gradle resolveAll \
+ && rm -rf /opt/prefetch /tmp/resolve.gradle "$GRADLE_USER_HOME/daemon" \
+ && chmod -R a+rwX "$GRADLE_USER_HOME"
+WORKDIR /
+```
 
 ## Step 7. `scripts/deps`
 
@@ -151,8 +179,25 @@ into the worktree (npm, a venv): an agent could install one there, and verify wo
 For build tools that download outside the worktree, verify already fails offline on a dependency
 the image doesn't have; the script turns that into a clear status instead of wasted fix rounds.
 
-**Template:** `templates/deps` (npm). A Gradle version is in `docs/building-the-factory.md`,
-Module 1, "Template: `scripts/deps`".
+**Template:** `templates/deps` (npm).
+
+A Gradle version. An init script prints the external dependencies each configuration declares,
+without resolving them (build-script plugins aren't included; the version is `null` when a
+platform or BOM sets it):
+
+```bash
+#!/usr/bin/env bash
+# scripts/deps: the product's direct dependencies with their declared versions, one per line, sorted.
+# Offline, from the current directory. The runner compares its output before and after each task.
+set -euo pipefail
+init=$(mktemp); trap 'rm -f "$init"' EXIT
+cat > "$init" <<'EOF'
+allprojects { tasks.register("listDeps") { doLast {
+  configurations.each { c -> c.dependencies.withType(ExternalModuleDependency).each { println "${it.group}:${it.name}:${it.version}" } }
+} } }
+EOF
+./gradlew -q --offline --no-configuration-cache --init-script "$init" listDeps | sort -u
+```
 
 ## Step 8. Commit on `main` and check
 

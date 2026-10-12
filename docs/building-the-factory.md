@@ -18,7 +18,9 @@ adapter per harness in `adapters/<name>/`, not one factory per harness. This cou
 implementer on Claude Code and a reviewer on Codex.
 
 Each module has a **goal**, what to **build**, the **harness-specific steps** (Pi, Claude Code,
-Codex, Antigravity), how to **try it** on the real product, and a **done when** check. The neutral part is
+Codex, Antigravity), how to **try it** on the real product, and a **done when** check. This course
+explains how to build the factory; to run it, use the short references `docs/factory/factory-contract.md`
+(what the machine needs) and `docs/factory/operating-the-factory.md` (which command for which job). The neutral part is
 done once. The harness-specific steps are done for each harness you use. Start with Pi, and add
 the others once Module 3 passes. Don't move to the next module until you pass the check.
 
@@ -112,7 +114,7 @@ factory-model/
 ├── roles/                     # role prompts: planner.md, implementer.md, reviewer.md
 ├── skills/                    # Agent Skills (SKILL.md): spec, plan, orchestrate, retro
 ├── guards/                    # neutral guard scripts + their tests
-├── bin/                       # sandbox, build-worker, agent-run, run-task, fan-out, collect, eval, check-product, check-factory
+├── bin/                       # start, sandbox, build-worker, agent-run, run-task, fan-out, collect, eval, check-product, check-factory
 ├── adapters/
 │   ├── pi/
 │   │   ├── Containerfile      # Pi layer of the worker image
@@ -148,12 +150,15 @@ factory-model/
     ├── from-conductor-to-orchestrator.md
     ├── building-the-factory.md
     ├── how-the-factory-works.md   # diagrams: directories, hosts and sandboxes, story → merge
+    ├── factory/
+    │   ├── factory-contract.md     # what the machine must provide (tools, sandbox, secrets)
+    │   └── operating-the-factory.md # which command for which job
     └── factory-log.md
 ```
 
 `bin/check-factory` checks this layout and creates anything missing (directories empty, files
 empty). For `adapters/` it only checks the directory itself, because its content depends on which
-harnesses you use. It prints `All good, structure complete`, or the list of what it created.
+harnesses you use. It skips `docs/`, which is documentation, not structure. It prints `All good, structure complete`, or the list of what it created.
 
 Add `FACTORY_HOME` to your shell profile, because the guards need it in every harness:
 
@@ -293,13 +298,16 @@ decides how much autonomy you can safely give later.
    `docs/specs/.gitkeep`.
 4. `toolchain.Containerfile`: the image that `scripts/verify` and the agents' build and test
    commands run in. If the product already has a CI or dev-container image, this file can be a
-   single `FROM` line that points at it. The requirements are listed with the template below.
+   single `FROM` line that points at it. Its requirements are in the product contract (Step 6).
 5. `scripts/deps`: lists the product's direct dependencies with their versions, so the runner can
    stop a task that changes them. Required when dependencies install into the worktree,
    recommended otherwise. See the template below.
 
 Commit them on `main`. `fan-out` creates worktrees from `main`, so agents only see what's
 committed there.
+
+What each file must do, and why, is in `docs/product/product-contract.md`: that's the one place
+to look when you plug in a product. This module shows the templates.
 
 The templates below are **examples, not requirements**. Copy them to `factory-model/templates/`
 (`verify`, `AGENTS.md`, `toolchain.Containerfile`, `deps`) as a starting point for new products,
@@ -411,7 +419,7 @@ your stack's.
 ```dockerfile
 # toolchain.Containerfile: the image the product builds and tests in.
 # The factory builds it from main, with the repo root as build context, and adds its layers on top.
-FROM node:22-bookworm-slim
+FROM docker.io/library/node:22-bookworm-slim
 # + system packages the build or tests need, for example:
 # RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
 #  && rm -rf /var/lib/apt/lists/*
@@ -420,65 +428,11 @@ FROM node:22-bookworm-slim
 #   Node needs neither: node_modules is in the worktree.
 ```
 
-The image has to meet these requirements:
-
-- **Debian- or Ubuntu-based.** The factory's base layer installs its packages with `apt-get`,
-  and the harness layers add binaries that need glibc. Alpine images don't work.
-- **Usable by any user.** The sandbox runs as your user ID with `HOME=/tmp`, so install tools
-  system-wide (`/usr/local`, `/opt`), not under `/root` or `~`.
-- **Caches at fixed paths.** Point every tool cache at a fixed path with `ENV`, and make it
-  writable by any user (`chmod -R a+rwX`). Don't rely on `~`: JVM tools (Gradle, Maven, sbt) take
-  it from `user.home`, which comes from `/etc/passwd`, not from `$HOME`, and the sandbox's user ID
-  usually has no entry there. Go and Cargo use `$HOME`, which is `/tmp` and empty on every call.
-- **Complete when offline, for `main`.** Every sandbox call starts from the image, and verify has
-  no network. Anything verify needs that isn't in the worktree has to be in the image: the
-  toolchain, the build tool's own distribution (for example the Gradle wrapper's) and the
-  dependencies `main` declares. `node_modules` lives in the worktree, so the implementer installs
-  it (see the verify template). The build context is the repo root, so the file can `COPY` the
-  build files it needs to pre-fetch. Copy only those, so a source change doesn't re-download
-  everything.
-- **No `ENTRYPOINT` needed.** The factory's base layer clears it, so the sandbox runs commands directly.
-
-Tasks never add dependencies, so the image is the only place a dependency outside the worktree
-can come from. Dependency changes land on `main` before the tasks that need them run (Module 4),
-and `bin/fan-out` rebuilds the image from `main` before every batch. A task that declares a
-dependency the image doesn't have fails verify offline (`Could not resolve …`), whatever the agent
-downloaded while it had network: each sandbox call is a new container.
-
-Where to point each build tool's cache:
-
-| Build tool | `ENV` in the image |
-|---|---|
-| Gradle | `GRADLE_USER_HOME=/opt/gradle-home` |
-| Maven | `MAVEN_OPTS="-Dmaven.repo.local=/opt/m2"` |
-| sbt (coursier) | `COURSIER_CACHE=/opt/coursier` |
-| Cargo | `CARGO_HOME=/usr/local/cargo` |
-| Go | `GOMODCACHE=/opt/gomod` |
-| npm, pip into a venv in the worktree | nothing: they install into the worktree |
-
-Only the Gradle row has been tested with this factory. Check the others against your tool's docs.
-
-A Gradle example. The wrapper's Gradle distribution is baked in by running `./gradlew` once, so
-`gradle-wrapper.properties` stays the only place that sets the Gradle version. Gradle has no
-"download everything" command (`dependencies` only prints the tree, and compile tasks skip
-resolution when there are no sources), so an init script resolves every configuration:
-
-```dockerfile
-FROM eclipse-temurin:21-jdk-noble
-ENV GRADLE_USER_HOME=/opt/gradle-home
-WORKDIR /opt/prefetch
-COPY gradlew settings.gradle build.gradle ./
-COPY gradle/ gradle/
-COPY app/build.gradle app/                       # one line per subproject
-RUN printf '%s\n' 'allprojects { tasks.register("resolveAll") { doLast { configurations.findAll { it.canBeResolved }.each { it.resolve() } } } }' > /tmp/resolve.gradle \
- && ./gradlew --no-daemon -q --init-script /tmp/resolve.gradle resolveAll \
- && rm -rf /opt/prefetch /tmp/resolve.gradle "$GRADLE_USER_HOME/daemon" \
- && chmod -R a+rwX "$GRADLE_USER_HOME"
-WORKDIR /
-```
-
-With `SANDBOX=bwrap` there's no image: the toolchain and `main`'s dependencies have to be on the
-host, in paths listed in `SANDBOX_RO_PATHS`.
+The image's requirements, where to point each build tool's cache, and a Gradle example that
+pre-fetches `main`'s dependencies are in `docs/product/product-contract.md`, Step 6. In short:
+Debian or Ubuntu, usable by any user, caches at fixed paths, and complete offline for `main`.
+Tasks never change dependencies, so the image is the only place a dependency outside the worktree
+can come from.
 
 #### Template: `scripts/deps`
 
@@ -492,40 +446,8 @@ set -euo pipefail
 jq -r '(.dependencies // {}) + (.devDependencies // {}) | to_entries[] | "\(.key)@\(.value)"' package.json | sort -u
 ```
 
-The rules:
-
-- **Direct dependencies with their declared versions**, one per line, sorted. The runner only
-  compares the output before and after a task, so the format is free, as long as any change to a
-  dependency or its version changes the output.
-- **Offline, from the current directory.** The runner runs it in the sandbox with no network, in
-  the worktree, and it reads the build files there. Don't `cd` relative to the script's own path:
-  the runner always runs **`main`'s copy**, so a task can't change how its dependencies are
-  listed.
-- **Read declarations, don't resolve.** It must work even when a task has declared a dependency
-  the image doesn't have, so the runner can report that instead of a resolution error.
-
-It's **required** when dependencies install into the worktree (npm, pip into a venv): an agent can
-install a new one there, and verify would pass. For build tools that download outside the
-worktree it's recommended: verify already fails offline on a dependency the image doesn't have,
-but `scripts/deps` turns that into a clear `deps-changed` status instead of three fix rounds.
-
-A Gradle version. An init script prints the external dependencies each configuration declares,
-without resolving them (build-script plugins aren't included; the version is `null` when a
-platform or BOM sets it):
-
-```bash
-#!/usr/bin/env bash
-# scripts/deps: the product's direct dependencies with their declared versions, one per line, sorted.
-# Offline, from the current directory. The runner compares its output before and after each task.
-set -euo pipefail
-init=$(mktemp); trap 'rm -f "$init"' EXIT
-cat > "$init" <<'EOF'
-allprojects { tasks.register("listDeps") { doLast {
-  configurations.each { c -> c.dependencies.withType(ExternalModuleDependency).each { println "${it.group}:${it.name}:${it.version}" } }
-} } }
-EOF
-./gradlew -q --offline --no-configuration-cache --init-script "$init" listDeps | sort -u
-```
+The rules it must follow, when it's required, and a Gradle version are in
+`docs/product/product-contract.md`, Step 7.
 
 #### Factory script: `bin/check-product`
 
@@ -750,6 +672,43 @@ Inside the sandbox, no harness can see the sign-ins you made on the host, so wor
 authenticate with variables from this list. Each harness adds its own names below. Don't add
 npm, GitHub or cloud tokens here.
 
+**Supplying the values.** The file holds names only, so it's committed. The values come from the
+environment of whatever starts the factory scripts: your terminal, or the orchestrator session
+you start from it, because each process passes its environment on to the ones it starts. The
+factory never reads secret files itself. Keep the values in a file outside every repo that only
+your user can read, and start the orchestrator through `bin/start`, which loads it:
+
+```bash
+install -m 600 /dev/null ~/.config/factory/env     # once; then add NAME=value lines with an editor
+bin/start claude                                   # the orchestrator, or any command, with the values loaded
+```
+
+`bin/start` (set `FACTORY_ENV` to use another file):
+
+```bash
+#!/usr/bin/env bash
+# usage: start <command> [args...]      e.g. bin/start claude
+# Runs <command> (the orchestrator session, or a factory script) with the factory's secrets in its
+# environment. Everything it starts inherits them, and bin/sandbox passes on the names listed in
+# config/sandbox-env. Values: NAME=value lines in $FACTORY_ENV (default ~/.config/factory/env), mode 600.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
+envfile="${FACTORY_ENV:-$HOME/.config/factory/env}"
+[ $# -ge 1 ] || { echo "usage: start <command> [args...]   e.g. start claude" >&2; exit 2; }
+[ -r "$envfile" ] \
+  || { echo "start: $envfile not found. Create it with mode 600 (docs/building-the-factory.md, Module 2)" >&2; exit 1; }
+[ -z "$(find "$envfile" -perm /077)" ] \
+  || echo "start: $envfile is readable by other users; run: chmod 600 $envfile" >&2
+set -a; . "$envfile"; set +a
+exec "$@"
+```
+
+Mode `600` keeps the values from other users, not from programs running as you: the orchestrator
+session and anything else you start can read them. `bin/sandbox` warns on stderr about each
+listed name that isn't set, so a missing key shows up before the harness fails to authenticate.
+The setup steps, with the variable each harness needs, are in `docs/factory/factory-contract.md`
+(Steps 5–6).
+
 `bin/sandbox`:
 
 ```bash
@@ -772,6 +731,9 @@ image="${SANDBOX_IMAGE:-factory-worker-$product}"
 
 # env allowlist: config/sandbox-env + what the factory scripts themselves need
 mapfile -t names < <(grep -Ev '^[[:space:]]*(#|$)' "$FACTORY_HOME/config/sandbox-env")
+for n in "${names[@]}"; do   # a warning, not an error: some names are optional (HTTPS_PROXY)
+  [ -n "${!n:-}" ] || echo "sandbox: $n (config/sandbox-env) is not set; start the orchestrator with bin/start, or the harness may fail to authenticate" >&2
+done
 names+=(FACTORY_HOME CONTINUE)
 
 case "$mode" in
@@ -783,8 +745,8 @@ case "$mode" in
           -v "$FACTORY_HOME:$FACTORY_HOME:ro" -v "$wt:$wt" -v "$rundir:$rundir"
           -v "$common:$common:ro" -v "$own:$own")
     [ "$net" = none ] && args+=(--network none)
-    if [ "$mode" = podman ]; then args+=(--userns=keep-id)          # files stay owned by you
-    else args+=(--user "$(id -u):$(id -g)"); fi
+    args+=(--user "$(id -u):$(id -g)")                              # files stay owned by you
+    [ "$mode" = podman ] && args+=(--userns=keep-id)                 # rootless: map your ID to itself
     for n in "${names[@]}"; do [ -n "${!n:-}" ] && args+=(-e "$n"); done
     exec "$mode" "${args[@]}" "$image" "$@" ;;
 
@@ -925,7 +887,7 @@ git -C ~/projects/<product> worktree add -q -b sandbox-test "$wt" main
 bin/sandbox "$wt" "$rd" -- ls -la ~/.ssh                    # nothing there
 bin/sandbox "$wt" "$rd" -- env                              # only allowlisted vars
 bin/sandbox "$wt" "$rd" -- touch "$FACTORY_HOME/x"          # read-only → fails
-bin/sandbox --net none "$wt" "$rd" -- curl -sI https://example.com   # fails
+bin/sandbox --net none "$wt" "$rd" -- curl -sSI https://example.com  # fails: "Could not resolve host"
 bin/sandbox "$wt" "$rd" -- git -C "$wt" status              # works
 bin/sandbox "$wt" "$rd" -- <build-tool> --version          # the product's toolchain (gradle, node, go…)
 ```
@@ -934,40 +896,154 @@ Run the same checks with `SANDBOX=bwrap` and compare.
 
 ### Neutral guard scripts
 
-`guards/bash.sh`:
+Each guard takes one argument, exits `0` to allow and `2` to block, and writes its reason to
+stderr. The reason is written **for the model**: what is blocked, and what to do instead.
+
+`guards/bash.sh` checks a command before it runs:
 
 ```bash
 #!/usr/bin/env bash
 # usage: bash.sh "<command>"   → exit 0 = allow, exit 2 = block (reason on stderr)
+# Each reason is written for the model: what is blocked, and what to do instead.
 cmd="$1"
-if grep -Eq 'git push|rm -rf /|--force|curl .*\| *(ba)?sh' <<<"$cmd"; then
-  echo "Blocked by factory: '$cmd' is not allowed. The runner handles git pushes; don't push yourself." >&2
-  exit 2
+block() { echo "Blocked by factory: $1" >&2; exit 2; }
+
+# git push, also with options before the subcommand (git -C <dir> push)
+if grep -Eq '(^|[^[:alnum:]_./-])git([[:space:]]+-[Cc][[:space:]]+[^[:space:]]+)*[[:space:]]+push\b' <<<"$cmd"; then
+  block "don't push. The runner commits your work after verify passes, and a human merges it. Leave your changes in the worktree."
+fi
+# a download piped into a shell
+if grep -Eq '\b(curl|wget)\b[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z|da)?sh\b' <<<"$cmd"; then
+  block "don't pipe a download into a shell. Tasks never install tools or dependencies: if one is missing, stop and say so under open questions in REPORT.md."
+fi
+# recursive delete of / or the home directory (paths inside the worktree are fine)
+if grep -Eq '\brm[[:space:]]+([^;&|]*[[:space:]])?(-[[:alpha:]]*[rR][[:alpha:]]*|--recursive)\b[^;&|]*[[:space:]](/|~|\$HOME|\$\{HOME\})/?\*?([[:space:];&|]|$)' <<<"$cmd"; then
+  block "don't delete / or the home directory. Delete only paths inside the worktree."
 fi
 exit 0
 ```
 
-`guards/files.sh`: same shape, takes a file path, and blocks:
+It blocks:
 
-- `.env*` files.
+- **`git push`**, also with options before the subcommand (`git -C <dir> push`). The runner
+  commits, and you merge.
+- **A download piped into a shell** (`curl … | sh`). Tasks never install tools or dependencies.
+- **A recursive delete of `/` or the home directory.** Paths inside the worktree are fine. Agents
+  often use absolute paths, so the pattern must not block `rm -rf <worktree>/build`.
+
+The patterns are deliberately narrow. A broad one (any `--force`, any `rm -rf /…`) blocks normal
+work, and the model then wastes turns working around it. The sandbox is the boundary. Guards only
+catch the obvious mistakes early, with a reason the model can follow.
+
+`guards/files.sh` checks a path before the agent writes or edits it:
+
+```bash
+#!/usr/bin/env bash
+# usage: files.sh "<path>"   → exit 0 = allow, exit 2 = block (reason on stderr)
+# Checks a path an agent is about to write or edit, as given and with symlinks resolved. Relative
+# paths are resolved against the current directory: the worktree, where the harness runs.
+p="$1"
+r=$(realpath -m -- "$p" 2>/dev/null || echo "$p")
+block() { echo "Blocked by factory: $1" >&2; exit 2; }
+
+for name in "${p##*/}" "${r##*/}"; do
+  case "$name" in
+    .env.example|.env.sample|.env.template) ;;
+    .env|.env.*)
+      block "don't write $p. Environment files hold secrets, and verify must not need one. Put example values in .env.example." ;;
+    package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|bun.lock|bun.lockb|gradle.lockfile|*.lockfile|\
+    Cargo.lock|go.sum|poetry.lock|Pipfile.lock|uv.lock|composer.lock|Gemfile.lock)
+      block "don't edit $p by hand. Tasks never change dependencies: everything this task needs is already declared on main. If you need a change, stop and explain which one and why under open questions in REPORT.md." ;;
+  esac
+done
+
+# harness config inside the worktree (the harness's own files under $HOME are fine)
+harness='/(\.pi|\.claude|\.codex|\.agents|\.agent)/|/\.mcp\.json/$'
+case "$r" in
+  "$PWD"/*) [[ "/${r#"$PWD"/}/" =~ $harness ]] \
+    && block "don't write harness config ($p). The factory configures the harness, and config in the worktree would change how later runs behave." ;;
+esac
+exit 0
+```
+
+It blocks:
+
+- **`.env` files** (`.env`, `.env.local`, …). `.env.example`, `.env.sample` and `.env.template`
+  are allowed, because they hold example values and a task that adds a setting should update them.
 - **Hand edits of lockfiles** (`package-lock.json`, `yarn.lock`, `gradle.lockfile`, `Cargo.lock`…).
-  The guard only sees the agent's file-edit tools, so a package manager run through bash can still
-  update a lockfile. That's the point: dependencies change through the package manager, never as
-  hand-written lockfile text. A model writing lockfiles by hand produces versions, hashes and
-  download URLs that look right but aren't, in a diff too long for anyone to read. Tasks don't
-  change dependencies at all (Module 3): dependency changes land on `main` first (Module 4).
-- Migrations that have already run.
+  Tasks never change dependencies (Module 3), so a task has no reason to edit one. The guard stops
+  the most dangerous case early: a model writing lockfile text produces versions, hashes and
+  download URLs that look right but aren't, in a diff too long for anyone to read. It only sees the
+  agent's file-edit tools. A change made through a package manager is caught by the offline verify
+  or the dependency gate (Module 3), and the reviewer flags any lockfile change in the diff.
 - **Harness config inside the worktree** (`.pi/`, `.claude/`, `.codex/`, `.agents/`, `.agent/`,
-  `.mcp.json`). An agent that writes harness config could change how the next run behaves.
+  `.mcp.json`). An agent that writes harness config could change how the next run behaves. The
+  harness's own files under `$HOME` (for example Claude Code's plans) are outside the worktree and
+  allowed.
+
+It checks the path both as given and with symlinks resolved, so a symlink with a harmless name
+doesn't get around it. Relative paths are resolved against the current directory, which is the
+worktree, because that's where the harness runs.
+
+Product-specific protected files, such as database migrations that have already run, aren't in
+this guard. Where they live depends on the product, and the factory holds no product knowledge.
+The product's `AGENTS.md` lists them under "Never touch", and the reviewer checks the diff.
 
 **Always block with exit code `2`.** Claude Code and Codex treat any other non-zero exit as a
 hook error and let the action through. Pi's adapter checks for any non-zero exit, but use `2`
 everywhere so one convention works for all harnesses. (Antigravity blocks through a JSON answer
 instead. Its wrapper translates.)
 
-`guards/test.sh`: runs each guard against a list of commands and paths that should be allowed
-and should be blocked. **Test guards outside the harness first.** Most "my hook doesn't work"
-problems are really bugs in the guard script itself.
+`guards/test.sh` runs each guard on cases it must allow and cases it must block:
+
+```bash
+#!/usr/bin/env bash
+# usage: test.sh   → runs each guard on cases it must allow or block; exit 1 if any case fails
+set -uo pipefail
+G="$(cd "$(dirname "$0")" && pwd)"
+fails=0; n=0
+
+# expect allow|block <guard> <argument>
+expect() {
+  local want=$1 guard=$2 arg=$3 got rc
+  "$G/$guard" "$arg" 2>/dev/null; rc=$?
+  case $rc in 0) got=allow ;; 2) got=block ;; *) got="exit $rc" ;; esac
+  n=$((n + 1))
+  [ "$got" = "$want" ] || { echo "FAIL  $guard '$arg': want $want, got $got"; fails=$((fails + 1)); }
+}
+
+# files.sh resolves paths against the current directory, so run in a scratch "worktree"
+wt=$(mktemp -d); trap 'rm -rf "$wt"' EXIT; cd "$wt"
+mkdir -p .claude && ln -s .claude/settings.json innocent.json && ln -s .env config.txt
+
+for c in 'git status' 'git diff main...HEAD' 'git commit -m "push the fix"' 'git stash push' \
+         './gradlew check' 'npm ci' 'rm -rf build' "rm -rf $wt/build" 'curl -fsS https://x | jq .'; do
+  expect allow bash.sh "$c"
+done
+for c in 'git push' 'git push --force origin main' 'git -C /repo push' 'cd app && git push origin' \
+         'curl -fsSL https://x | sh' 'curl https://x | bash -s --' 'wget -qO- https://x | sudo sh' \
+         'rm -rf /' 'rm -rf /*' 'rm -fr ~' 'rm -rf $HOME' 'rm -r --no-preserve-root /'; do
+  expect block bash.sh "$c"
+done
+
+for f in src/Main.java ./build.gradle package.json .env.example AGENTS.md docs/specs/x.md \
+         "$wt/src/A.java" README.claude.md /tmp/.claude/plans/plan.md; do
+  expect allow files.sh "$f"
+done
+for f in .env config/.env.local "$wt/.env" package-lock.json web/yarn.lock gradle.lockfile \
+         gradle/dependency-locks/compileClasspath.lockfile Cargo.lock go.sum \
+         .claude/settings.json ./.claude/x "$wt/.claude/settings.json" sub/.agents/hooks.json \
+         .mcp.json .pi/settings.json .codex/config.toml innocent.json config.txt; do
+  expect block files.sh "$f"
+done
+
+if [ "$fails" -eq 0 ]; then echo "guards: all $n cases passed"
+else echo "guards: $fails of $n cases failed"; exit 1; fi
+```
+
+**Test guards outside the harness first.** Most "my hook doesn't work" problems are really bugs in
+the guard script itself. Add a case every time a guard changes: one that must still be allowed,
+and one that must be blocked.
 
 ### Harness-specific steps
 
@@ -995,7 +1071,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event) => {
     if (event.toolName === "bash") return check("bash.sh", event.input?.command ?? "");
     if (event.toolName === "edit" || event.toolName === "write")
-      return check("files.sh", event.input?.path ?? ""); // check the path field name in Pi's tool schema
+      return check("files.sh", event.input?.path ?? ""); // Pi's edit and write tools take `path`
   });
 }
 ```
@@ -1007,7 +1083,7 @@ export default function (pi: ExtensionAPI) {
    ```dockerfile
    # Pi harness layer: Pi on the factory's own Node. Built FROM the factory base layer by bin/build-worker.
    ARG BASE_IMAGE
-   FROM node:22-bookworm-slim AS node
+   FROM docker.io/library/node:22-bookworm-slim AS node
    FROM ${BASE_IMAGE}
    # The factory's Node lives off the PATH, so it never replaces a Node the product uses.
    COPY --from=node /usr/local/bin/node /opt/factory/node/bin/node
@@ -1044,7 +1120,7 @@ export default function (pi: ExtensionAPI) {
      "hooks": {
        "PreToolUse": [
          { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
-           "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh" }] }
+           "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh\"" }] }
        ]
      }
    }
@@ -1058,7 +1134,7 @@ export default function (pi: ExtensionAPI) {
    # Claude Code harness layer: the native binary only, no Node at run time. Built FROM the factory
    # base layer by bin/build-worker. npm is only the pinned download, in a throwaway stage.
    ARG BASE_IMAGE
-   FROM node:22-bookworm-slim AS claude
+   FROM docker.io/library/node:22-bookworm-slim AS claude
    RUN npm install -g @anthropic-ai/claude-code@<pinned-version>
    FROM ${BASE_IMAGE}
    COPY --from=claude /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/bin/claude
@@ -1110,7 +1186,7 @@ export default function (pi: ExtensionAPI) {
    ```dockerfile
    # Codex harness layer: Codex on the factory's own Node. Built FROM the factory base layer by bin/build-worker.
    ARG BASE_IMAGE
-   FROM node:22-bookworm-slim AS node
+   FROM docker.io/library/node:22-bookworm-slim AS node
    FROM ${BASE_IMAGE}
    COPY --from=node /usr/local/bin/node /opt/factory/node/bin/node
    COPY --from=node /usr/local/lib/node_modules/npm /opt/factory/node/lib/node_modules/npm
@@ -1394,8 +1470,8 @@ what is installed on the machine.
    ```
 3. `--tools` limits which tools exist, so a reviewer with `Read,Grep,Glob` can't edit even under
    `bypassPermissions`.
-4. `bypassPermissions` refuses to run as root. The sandbox runs as your user (`--userns=keep-id`
-   / `--user`), so this only matters if you change that.
+4. `bypassPermissions` refuses to run as root. The sandbox runs as your user (`--user`, plus
+   `--userns=keep-id` on Podman), so this only matters if you change that.
 5. `--max-budget-usd` gives you the per-run hard budget from `cost-strategy.md` for free.
 
 **Codex:**

@@ -9,7 +9,7 @@ The big picture in diagrams: which directories exist, where things run, and what
 
 ```
 ~/factory-model/                 THE FACTORY: how work is done (this repo)
-├── bin/                         scripts: sandbox, build-worker, agent-run, run-task, fan-out, collect
+├── bin/                         scripts: start, sandbox, build-worker, agent-run, run-task, fan-out, collect
 ├── config/                      routing.json (role → harness + model), sandbox-env (allowed env vars)
 ├── roles/ skills/ guards/       role prompts, skills, guard scripts
 ├── sandbox/Containerfile        factory base layer of the worker image

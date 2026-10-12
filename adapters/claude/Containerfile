@@ -1,7 +1,7 @@
 # Claude Code harness layer: the native binary only, no Node at run time. Built FROM the factory
 # base layer by bin/build-worker. npm is only the pinned download, in a throwaway stage.
 ARG BASE_IMAGE
-FROM node:22-bookworm-slim AS claude
+FROM docker.io/library/node:22-bookworm-slim AS claude
 RUN npm install -g @anthropic-ai/claude-code@2.1.296
 FROM ${BASE_IMAGE}
 COPY --from=claude /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/bin/claude

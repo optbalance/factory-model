@@ -17,6 +17,9 @@ image="${SANDBOX_IMAGE:-factory-worker-$product}"
 
 # env allowlist: config/sandbox-env + what the factory scripts themselves need
 mapfile -t names < <(grep -Ev '^[[:space:]]*(#|$)' "$FACTORY_HOME/config/sandbox-env")
+for n in "${names[@]}"; do   # a warning, not an error: some names are optional (HTTPS_PROXY)
+  [ -n "${!n:-}" ] || echo "sandbox: $n (config/sandbox-env) is not set; start the orchestrator with bin/start, or the harness may fail to authenticate" >&2
+done
 names+=(FACTORY_HOME CONTINUE)
 
 case "$mode" in
@@ -28,8 +31,8 @@ case "$mode" in
           -v "$FACTORY_HOME:$FACTORY_HOME:ro" -v "$wt:$wt" -v "$rundir:$rundir"
           -v "$common:$common:ro" -v "$own:$own")
     [ "$net" = none ] && args+=(--network none)
-    if [ "$mode" = podman ]; then args+=(--userns=keep-id)          # files stay owned by you
-    else args+=(--user "$(id -u):$(id -g)"); fi
+    args+=(--user "$(id -u):$(id -g)")                              # files stay owned by you
+    [ "$mode" = podman ] && args+=(--userns=keep-id)                 # rootless: map your ID to itself
     for n in "${names[@]}"; do [ -n "${!n:-}" ] && args+=(-e "$n"); done
     exec "$mode" "${args[@]}" "$image" "$@" ;;
 

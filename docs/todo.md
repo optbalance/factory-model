@@ -18,5 +18,14 @@ when it's fixed.
   `devDependencies` (not `optionalDependencies` or `peerDependencies`), and the Gradle version
   skips build-script plugins, `buildSrc/` and included builds. That matters most where
   dependencies install into the worktree (npm, a venv), because verify then doesn't catch them.
-  Possible fix: extend the templates (`templates/deps` and the Gradle version in Module 1) to the
+  Possible fix: extend the templates (`templates/deps` and the Gradle version in `docs/product/product-contract.md`, Step 7) to the
   missing kinds. Until then the reviewer role flags any change to build files or lockfiles.
+- **`SANDBOX=bwrap` fails on hosts that restrict unprivileged user namespaces.** On Ubuntu 23.10+
+  (`kernel.apparmor_restrict_unprivileged_userns = 1`), every `bin/sandbox` call in bwrap mode
+  aborts before running the command: `bwrap: setting up uid map: Permission denied` (default
+  network), or `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` (`--net none`). So
+  the bwrap fallback is unusable, and the "Try the sandbox" `--net none` check in
+  `docs/building-the-factory.md` (Module 2) fails for the wrong reason and proves nothing.
+  Possible fix: document the host setup in Module 2, an AppArmor profile for `/usr/bin/bwrap`
+  that grants `userns` (as Ubuntu ships for other tools in `/etc/apparmor.d/`), and have
+  `bin/sandbox` fail with a clear message pointing to it.
