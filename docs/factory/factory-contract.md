@@ -1,7 +1,7 @@
 # Factory contract
 
 What a machine must provide before the factory can run. Work through the steps in order. The
-explanations and the code behind each step are in `docs/building-the-factory.md`; what each
+explanations and the code behind each step are in `docs/how-to/building-the-factory.md`; what each
 product must provide is in `docs/product/product-contract.md`. How to run the factory once this is
 done is in `docs/factory/operating-the-factory.md`.
 
@@ -86,7 +86,7 @@ running as you: the orchestrator session can read them.
 ## Step 7. Routing: `config/routing.json`
 
 Which harness and model runs each role. `bin/build-worker` also reads it to decide which harness
-layers go into the worker image. Format: `docs/building-the-factory.md`, Module 3.
+layers go into the worker image. Format: `docs/how-to/building-the-factory.md`, Module 3.
 
 ## Step 8. Check
 

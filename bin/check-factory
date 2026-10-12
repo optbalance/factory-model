@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # usage: check-factory
-# Checks that the factory has the Module 0 layout (docs/building-the-factory.md) and creates
+# Checks that the factory has the Module 0 layout (docs/how-to/building-the-factory.md) and creates
 # whatever is missing: directories empty, files empty. adapters/ is only checked as a directory;
 # its content depends on which harnesses you use. docs/ isn't checked: it's documentation, not structure.
 set -euo pipefail

@@ -12,7 +12,7 @@ when it's fixed.
   derive the name in one helper used by both scripts, from the basename plus a short hash of the
   absolute repo path.
 - **The dependency gate only sees the dependency kinds `scripts/deps` lists.** `bin/run-task`
-  (`docs/building-the-factory.md`, Module 3) compares `main`'s `scripts/deps` output before and
+  (`docs/how-to/building-the-factory.md`, Module 3) compares `main`'s `scripts/deps` output before and
   after a task. The script reads build files in the worktree, which the agent can edit. Kinds the
   templates don't list pass unnoticed: the npm template reads only `dependencies` and
   `devDependencies` (not `optionalDependencies` or `peerDependencies`), and the Gradle version
@@ -25,7 +25,7 @@ when it's fixed.
   aborts before running the command: `bwrap: setting up uid map: Permission denied` (default
   network), or `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` (`--net none`). So
   the bwrap fallback is unusable, and the "Try the sandbox" `--net none` check in
-  `docs/building-the-factory.md` (Module 2) fails for the wrong reason and proves nothing.
+  `docs/how-to/building-the-factory.md` (Module 2) fails for the wrong reason and proves nothing.
   Possible fix: document the host setup in Module 2, an AppArmor profile for `/usr/bin/bwrap`
   that grants `userns` (as Ubuntu ships for other tools in `/etc/apparmor.d/`), and have
   `bin/sandbox` fail with a clear message pointing to it.

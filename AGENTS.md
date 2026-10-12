@@ -1,8 +1,8 @@
 # factory-model
 
 This repo is the factory: the process that builds products, not a product itself. It is used for
-any product, with any harness. Read `docs/how-the-factory-works.md` for the big picture and
-`docs/building-the-factory.md` for the details. What a product must provide is in
+any product, with any harness. Read `docs/how-to/how-the-factory-works.md` for the big picture and
+`docs/how-to/building-the-factory.md` for the details. What a product must provide is in
 `docs/product/product-contract.md`; what the machine must provide is in
 `docs/factory/factory-contract.md`, and how to run the factory is in
 `docs/factory/operating-the-factory.md`.

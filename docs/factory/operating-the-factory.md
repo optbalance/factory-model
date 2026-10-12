@@ -2,7 +2,7 @@
 
 Which command to use for each job. The machine must meet `docs/factory/factory-contract.md` first.
 Run the commands from `~/factory-model`; paths assume products are in `~/projects/<product>`. How the
-pieces fit together is in `docs/how-the-factory-works.md`.
+pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 
 ## Commands at a glance
 
@@ -20,7 +20,7 @@ pieces fit together is in `docs/how-the-factory-works.md`.
 | Collect a run's results | `bin/collect` | not built yet (Module 6) |
 | Measure the factory | `bin/eval` | not built yet (Module 8) |
 
-Commands marked "not built yet" are specified in `docs/building-the-factory.md`, in the module
+Commands marked "not built yet" are specified in `docs/how-to/building-the-factory.md`, in the module
 shown. Update this table as each one lands.
 
 ---

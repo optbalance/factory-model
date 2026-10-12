@@ -1,0 +1,11 @@
+{
+  "roles": {
+    "planner":            { "harness": "claude", "model": "opus",   "effort": "high",   "output": "events" },
+    "implementer":        { "harness": "claude", "model": "sonnet", "effort": "medium", "output": "events" },
+    "implementer-strong": { "harness": "claude", "model": "opus",   "effort": "high",   "output": "events" },
+    "reviewer":           { "harness": "claude", "model": "opus",   "effort": "high",
+                            "tools": "Read,Grep,Glob", "output": "text" },
+    "scout":              { "harness": "claude", "model": "haiku",  "effort": "low",
+                            "tools": "Read,Grep,Glob", "output": "text" }
+  }
+}

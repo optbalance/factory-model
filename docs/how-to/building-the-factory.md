@@ -108,6 +108,7 @@ factory-model/
 ├── package.json               # makes this repo a Pi package (Pi adapter manifest only)
 ├── config/
 │   ├── routing.json           # role → harness + model
+│   ├── routing.<name>.json    # alternative routings (e.g. routing.claude.json), copied over routing.json or passed to bin/eval
 │   └── sandbox-env            # env vars allowed into the sandbox
 ├── sandbox/
 │   └── Containerfile          # factory base layer of the worker image, FROM a product's toolchain image
@@ -147,9 +148,11 @@ factory-model/
 ├── evals/
 ├── runs/                      # run logs (gitignored)
 └── docs/
-    ├── from-conductor-to-orchestrator.md
-    ├── building-the-factory.md
-    ├── how-the-factory-works.md   # diagrams: directories, hosts and sandboxes, story → merge
+    ├── how-to/
+    │   ├── from-conductor-to-orchestrator.md
+    │   ├── building-the-factory.md
+    │   ├── how-the-factory-works.md   # diagrams: directories, hosts and sandboxes, story → merge
+    │   └── cost-strategy.md
     ├── factory/
     │   ├── factory-contract.md     # what the machine must provide (tools, sandbox, secrets)
     │   └── operating-the-factory.md # which command for which job
@@ -696,7 +699,7 @@ FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
 envfile="${FACTORY_ENV:-$HOME/.config/factory/env}"
 [ $# -ge 1 ] || { echo "usage: start <command> [args...]   e.g. start claude" >&2; exit 2; }
 [ -r "$envfile" ] \
-  || { echo "start: $envfile not found. Create it with mode 600 (docs/building-the-factory.md, Module 2)" >&2; exit 1; }
+  || { echo "start: $envfile not found. Create it with mode 600 (docs/how-to/building-the-factory.md, Module 2)" >&2; exit 1; }
 [ -z "$(find "$envfile" -perm /077)" ] \
   || echo "start: $envfile is readable by other users; run: chmod 600 $envfile" >&2
 set -a; . "$envfile"; set +a
@@ -1341,6 +1344,10 @@ Routing principles:
 Each routing entry names a harness, so the rest of the entry uses **that harness's vocabulary**:
 model IDs, tool names and the access setting. The adapter only reads the keys it understands.
 The neutral keys are `harness`, `model` and `output` (`events` or `text`).
+
+A complete Claude-only routing (for a single Claude subscription) is in `config/routing.claude.json`;
+its reviewer can only be a different model of the same family, which catches less than
+cross-family review.
 
 The harnesses named here are the ones `bin/build-worker` installs (Module 2). After routing starts
 using another harness, rebuild each product's worker image.
