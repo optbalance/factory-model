@@ -20,7 +20,6 @@ The big picture in diagrams: which directories exist, where things run, and what
 ├── AGENTS.md                    product knowledge for agents
 ├── scripts/verify               the one health check (exit 0 = healthy)
 ├── toolchain.Containerfile      the image the product builds and tests in
-├── scripts/deps                 lists direct dependencies and versions, for the dependency gate
 ├── docs/specs/                  specs and task files
 └── .git/                        the product's history, shared by all of its worktrees
 
@@ -44,8 +43,8 @@ product repo so they never appear inside it. Each one is deleted after you merge
 | Lives | For good | For good | Until the task is merged |
 
 **The contract between factory and product** is the only thing the factory knows about a product:
-`AGENTS.md`, `scripts/verify`, `docs/specs/`, `toolchain.Containerfile` (holding every dependency
-`main` declares) and `scripts/deps` (required when dependencies install into the worktree).
+`AGENTS.md`, `scripts/verify`, `docs/specs/` and `toolchain.Containerfile` (holding every
+dependency `main` declares).
 
 ---
 
@@ -164,7 +163,6 @@ sequenceDiagram
     end
     Run->>Ver: run verify
     Ver-->>Run: green
-    Note over Run: dependency gate: main's scripts/deps, before vs after.<br/>Any change → deps-changed, stop here
     Run->>WT: git commit on factory/<id>
     Run->>Rev: task file + diff
     Rev-->>Run: VERDICT: approve / changes-needed
@@ -182,8 +180,8 @@ tasks until the story's tasks are merged. Three rules hold for every task:
 
 - **Dependencies change on `main`, never in a task.** The planner lists the dependency changes a
   spec needs, you approve them and commit them on `main` before the tasks run, and the worker
-  image is rebuilt with them. Offline verify and the dependency gate stop a task that changes
-  dependencies anyway.
+  image is rebuilt with them. Offline verify stops a task that changes them anyway where the
+  build tool downloads outside the worktree; elsewhere the reviewer sees the change in the diff.
 - **Done means verified.** Only `scripts/verify` decides a task is green, checked by the runner
   after the agent exits. The model can't declare itself done.
 - **You merge.** Agents never push or merge. The runner commits to local `factory/<id>`
@@ -194,15 +192,11 @@ tasks until the story's tasks are merged. Three rules hold for every task:
 ```mermaid
 flowchart TD
   S(["task file in the worktree"]) --> I["implementer: do the task<br/>(sandbox, network open)"]
-  I --> G0{"dependency gate<br/>dependencies unchanged?"}
-  G0 -- no --> U(["status: deps-changed<br/>orchestrator triages"])
-  G0 -- yes --> V{"verify<br/>(sandbox, no network)"}
-  V -- green --> G{"dependency gate<br/>dependencies unchanged?"}
-  G -- yes --> C["runner commits on factory/&lt;id&gt;"]
-  G -- no --> U
+  I --> V{"verify<br/>(sandbox, no network)"}
+  V -- green --> C["runner commits on factory/&lt;id&gt;"]
   V -- "red, round 1-2" --> F["implementer continues:<br/>fix the cause"] --> V
   V -- "red, round 3" --> E["implementer-strong:<br/>fix the cause"] --> V2{"verify"}
-  V2 -- green --> G
+  V2 -- green --> C
   V2 -- red --> R(["status: red<br/>orchestrator triages"])
   C --> RV["reviewer: diff vs acceptance criteria<br/>(sandbox, read-only tools)"]
   RV --> D(["status: green + verdict<br/>ready for you"])
@@ -219,7 +213,7 @@ except what's in the worktree and the run directory.
 |---|---|---|
 | Spec, task files | product: `docs/specs/` | yes, on `main` |
 | Code changes, `REPORT.md` | worktree, branch `factory/<id>` | merged by you, or dropped |
-| Briefs, `calls.log`, `verify.log`, `status`, `deps.diff`, `diff.patch`, review | factory: `runs/<run>/<id>/` | gitignored, local history |
+| Briefs, `calls.log`, `verify.log`, `status`, `diff.patch`, review | factory: `runs/<run>/<id>/` | gitignored, local history |
 | Approved dependency changes | product: build files and lockfiles, plus `docs/specs/NNN-name/dependencies.md` | yes, on `main` |
 | Failures and their fixes | factory: `docs/factory-log.md` | yes, drives factory improvements |
 | Product knowledge learned | product: `AGENTS.md` | yes |

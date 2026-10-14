@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# usage: run-task <worktree> <task-file> <run-dir>   (task-file: a path inside the worktree)
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
+wt=$1; task=$2; rundir=$3; mkdir -p "$rundir"
+branch=$(git -C "$wt" symbolic-ref -q HEAD) || { echo "run-task: $wt is not on a branch" >&2; exit 2; }
+run() { "$FACTORY_HOME/bin/agent-run" "$@"; }
+verify() { "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- scripts/verify > "$rundir/verify.log" 2>&1; }
+
+{ printf 'Complete the task in %s. Write REPORT.md as it specifies.\n' "$task"
+  printf 'Do not add, remove or upgrade dependencies: everything this task needs is already declared on main and in the image. If you need a change, stop and explain which one and why under open questions in REPORT.md.\n'
+} > "$rundir/brief.md"
+run implementer "$wt" "$rundir/brief.md" "$rundir" || true
+
+status=red
+for role in implementer implementer implementer-strong; do      # 2 fix rounds, then escalate
+  if verify; then status=green; break; fi
+  { cat "$rundir/brief.md"                                       # implementer-strong starts a new session
+    echo "scripts/verify failed. Fix the cause (don't weaken the tests). Output:"; tail -60 "$rundir/verify.log"; } > "$rundir/fix.md"
+  if [ "$role" = implementer ]; then CONTINUE=1 run "$role" "$wt" "$rundir/fix.md" "$rundir" || true
+  else run "$role" "$wt" "$rundir/fix.md" "$rundir" || true; fi
+done
+[ $status = red ] && verify && status=green
+# The agent can't move the branch (the shared repo is read-only in the sandbox), but it can move
+# HEAD off it (git checkout --detach). Then the work wouldn't be on the branch you merge.
+if [ "$(git -C "$wt" symbolic-ref -q HEAD)" != "$branch" ]; then
+  status=red; echo "run-task: HEAD is no longer on ${branch#refs/heads/}; the agent moved it" | tee "$rundir/head.log" >&2
+fi
+echo "$status" > "$rundir/status"

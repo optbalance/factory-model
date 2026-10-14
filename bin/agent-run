@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# usage: agent-run <role> <workdir> <prompt-file> <run-dir>
+set -euo pipefail
+export FACTORY_HOME="${FACTORY_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
+role=$1; workdir=$2; prompt=$3; rundir=$4
+# absolute: these paths are passed into the sandbox, whose working directory is the worktree
+workdir=$(realpath -ms "$workdir"); prompt=$(realpath -ms "$prompt"); rundir=$(realpath -ms "$rundir")
+cfg=$(jq -ec --arg r "$role" '.roles[$r]' "$FACTORY_HOME/${ROUTING:-config/routing.json}")
+harness=$(jq -r .harness <<<"$cfg")
+[ -f "$FACTORY_HOME/roles/$role.md" ] || { echo "agent-run: no role prompt roles/$role.md" >&2; exit 2; }
+mkdir -p "$rundir"
+# System prompt: the product's instructions as committed on main, then the role prompt.
+# Adapters pass this file on; they never read AGENTS.md or roles/ themselves.
+{ git -C "$workdir" show main:AGENTS.md \
+    || { echo "agent-run: AGENTS.md is not committed on main (product contract, Step 2)" >&2; exit 1; }
+  echo; cat "$FACTORY_HOME/roles/$role.md"; } > "$rundir/$role.system.md"
+echo "$(date -Is) $role $(jq -r .model <<<"$cfg") sandbox=${SANDBOX:-docker}" >> "$rundir/calls.log"
+exec "$FACTORY_HOME/bin/sandbox" "$workdir" "$rundir" -- \
+     "$FACTORY_HOME/adapters/$harness/run.sh" "$cfg" "$role" "$workdir" "$prompt" "$rundir"

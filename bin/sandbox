@@ -6,6 +6,8 @@ FACTORY_HOME="${FACTORY_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"; export FACTOR
 mode="${SANDBOX:-docker}"
 net=open; if [ "$1" = --net ]; then net=$2; shift 2; fi
 wt=$1; rundir=$2; shift 2; [ "$1" = -- ] && shift
+mkdir -p "$rundir"                                   # created as you, not by the container engine
+wt=$(realpath -ms "$wt"); rundir=$(realpath -ms "$rundir")   # mounts need absolute paths
 
 # git metadata: shared repo read-only, this worktree's own git dir writable
 common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)

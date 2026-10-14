@@ -11,15 +11,17 @@ when it's fixed.
   overwrites the other's, and tasks of one product run in the other's toolchain. Possible fix:
   derive the name in one helper used by both scripts, from the basename plus a short hash of the
   absolute repo path.
-- **The dependency gate only sees the dependency kinds `scripts/deps` lists.** `bin/run-task`
-  (`docs/how-to/building-the-factory.md`, Module 3) compares `main`'s `scripts/deps` output before and
-  after a task. The script reads build files in the worktree, which the agent can edit. Kinds the
-  templates don't list pass unnoticed: the npm template reads only `dependencies` and
-  `devDependencies` (not `optionalDependencies` or `peerDependencies`), and the Gradle version
-  skips build-script plugins, `buildSrc/` and included builds. That matters most where
-  dependencies install into the worktree (npm, a venv), because verify then doesn't catch them.
-  Possible fix: extend the templates (`templates/deps` and the Gradle version in `docs/product/product-contract.md`, Step 7) to the
-  missing kinds. Until then the reviewer role flags any change to build files or lockfiles.
+- **No hard stop for dependencies installed into the worktree.** Tasks must not change
+  dependencies; `bin/run-task` (`docs/how-to/building-the-factory.md`, Module 3) enforces that only
+  through offline `scripts/verify`, which fails when a build tool that downloads outside the
+  worktree (Gradle, Maven, Cargo, Go) meets a dependency the image lacks. Package managers that
+  install into the worktree (npm `node_modules/`, pip into a venv) pass that check: an agent with
+  network during its run can install a package, and verify still passes. A change to
+  `package.json` or a lockfile shows in the reviewer's diff, but an install that isn't saved there
+  slips through until a fresh worktree fails. No current product is affected. Revisit when the
+  first such product is plugged in. Possible fix: a product-provided command that lists declared
+  dependencies, compared by `run-task` before and after the task (removed once as unneeded
+  machinery; it read build files the agent can edit, so it must use `main`'s copy).
 - **`SANDBOX=bwrap` fails on hosts that restrict unprivileged user namespaces.** On Ubuntu 23.10+
   (`kernel.apparmor_restrict_unprivileged_userns = 1`), every `bin/sandbox` call in bwrap mode
   aborts before running the command: `bwrap: setting up uid map: Permission denied` (default
@@ -29,3 +31,12 @@ when it's fixed.
   Possible fix: document the host setup in Module 2, an AppArmor profile for `/usr/bin/bwrap`
   that grants `userns` (as Ubuntu ships for other tools in `/etc/apparmor.d/`), and have
   `bin/sandbox` fail with a clear message pointing to it.
+- **No headless planner step in `bin/run-task`, on purpose.** Planning happens once, interactively,
+  with the `plan` skill; the reviewed task file is the implementer's whole instruction, so there is
+  no `roles/planner.md` and nothing calls `agent-run planner` (the `planner` entry in
+  `config/routing.json` only records the model for interactive planning sessions). What could go
+  wrong: a cheap implementer may fail on approach (design) even with a good task file, burning fix
+  rounds. Add the step only if Module 8 evals show that, and after trying more concrete task files
+  first. Possible fix: `run-task` calls `agent-run planner` (read-only tools) before the
+  implementer, the planner writes `$rundir/approach.md`, and `run-task` appends it to `brief.md`;
+  then write `roles/planner.md`. Cost: one strong-model call per task.

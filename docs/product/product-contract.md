@@ -9,12 +9,10 @@ to the product. Everything here lives in the **product** repo.
 |---|---|---|---|
 | 1 | git repo with a `main` branch | — | always |
 | 2 | `AGENTS.md` | `templates/AGENTS.md` | always |
-| 3 | `CLAUDE.md` → `AGENTS.md` symlink | — | if any role runs on Claude Code |
-| 4 | `scripts/verify` | `templates/verify` | always |
-| 5 | `docs/specs/` | — | always |
-| 6 | `toolchain.Containerfile` | `templates/toolchain.Containerfile` | with `SANDBOX=docker` (default) or `podman` |
-| 7 | `scripts/deps` | `templates/deps` | if dependencies install into the worktree (npm, a venv); recommended otherwise |
-| 8 | Commit on `main` and check | — | always |
+| 3 | `scripts/verify` | `templates/verify` | always |
+| 4 | `docs/specs/` | — | always |
+| 5 | `toolchain.Containerfile` | `templates/toolchain.Containerfile` | with `SANDBOX=docker` (default) or `podman` |
+| 6 | Commit on `main` and check | — | always |
 
 ---
 
@@ -49,20 +47,14 @@ factory nobody is there to answer, and the runner commits after verify passes. O
 in the task's `REPORT.md`.
 
 **Why:** agents start cold, with no memory of earlier tasks. This file is the only product
-knowledge they get for free, so it decides how well they work.
+knowledge they get for free, so it decides how well they work. The factory reads it from `main`
+and puts it into every agent's system prompt itself, whatever the harness, so the product needs
+no harness-specific copy such as `CLAUDE.md`. If you keep one for your own sessions, make it a
+symlink to `AGENTS.md`.
 
 **Template:** `templates/AGENTS.md`. Delete sections that don't apply rather than leaving them empty.
 
-## Step 3. `CLAUDE.md` symlink (only if Claude Code is used)
-
-**What:** `ln -s AGENTS.md CLAUDE.md`, committed as a symlink.
-
-**Why:** Claude Code reads `CLAUDE.md`, not `AGENTS.md`. A symlink keeps one source of truth;
-a copy would drift.
-
-**Template:** none.
-
-## Step 4. `scripts/verify`
+## Step 3. `scripts/verify`
 
 **What:** one executable script that exits `0` when the product is healthy and non-zero when it
 isn't: build, lint, type checks, tests. It must:
@@ -83,7 +75,7 @@ in a fresh sandbox without network; the agent can't declare a task finished.
 
 **Template:** `templates/verify`. Replace the `step` lines with your stack's commands.
 
-## Step 5. `docs/specs/`
+## Step 4. `docs/specs/`
 
 **What:** a committed `docs/specs/` directory. If it's empty, add `docs/specs/.gitkeep`, because
 git doesn't track empty directories.
@@ -93,7 +85,7 @@ so every worktree has its own copy.
 
 **Template:** none.
 
-## Step 6. `toolchain.Containerfile`
+## Step 5. `toolchain.Containerfile`
 
 **What:** the image that verify and the agents' build and test commands run in. The factory
 builds it from `main` with the repo root as build context, and adds its own layers on top. It
@@ -124,7 +116,7 @@ must be:
   the Gradle wrapper's) and every dependency `main` declares are in the image. To pre-fetch, `COPY`
   only the build files (not the sources), so a source change doesn't trigger a re-download.
   `node_modules` and a venv live in the worktree instead: the implementer installs them, and
-  verify names the install command when they're missing (Step 4).
+  verify names the install command when they're missing (Step 3).
 - **Free of `ENTRYPOINT` requirements.** The factory clears it and runs commands directly.
 
 If the product already has a CI or dev-container image that meets these points, the file can be
@@ -159,47 +151,7 @@ RUN printf '%s\n' 'allprojects { tasks.register("resolveAll") { doLast { configu
 WORKDIR /
 ```
 
-## Step 7. `scripts/deps`
-
-**What:** a script that prints the product's direct dependencies with their declared versions,
-one per line, sorted. It must:
-
-- read the build files in the **current directory** (the runner runs it from the worktree root),
-  and not `cd` relative to its own path;
-- run **offline**, and read declarations without resolving them, so it still works when a task
-  declared a dependency the image doesn't have;
-- change its output whenever a dependency is added, removed, or changes version.
-
-It doesn't need the executable bit: the runner runs it with `bash`.
-
-**Why:** tasks never change dependencies; changes are planned, approved, and committed on `main`
-before the tasks run. The runner runs `main`'s copy of this script before and after each task and
-stops a task whose output changed (status `deps-changed`). It's required when dependencies install
-into the worktree (npm, a venv): an agent could install one there, and verify would still pass.
-For build tools that download outside the worktree, verify already fails offline on a dependency
-the image doesn't have; the script turns that into a clear status instead of wasted fix rounds.
-
-**Template:** `templates/deps` (npm).
-
-A Gradle version. An init script prints the external dependencies each configuration declares,
-without resolving them (build-script plugins aren't included; the version is `null` when a
-platform or BOM sets it):
-
-```bash
-#!/usr/bin/env bash
-# scripts/deps: the product's direct dependencies with their declared versions, one per line, sorted.
-# Offline, from the current directory. The runner compares its output before and after each task.
-set -euo pipefail
-init=$(mktemp); trap 'rm -f "$init"' EXIT
-cat > "$init" <<'EOF'
-allprojects { tasks.register("listDeps") { doLast {
-  configurations.each { c -> c.dependencies.withType(ExternalModuleDependency).each { println "${it.group}:${it.name}:${it.version}" } }
-} } }
-EOF
-./gradlew -q --offline --no-configuration-cache --init-script "$init" listDeps | sort -u
-```
-
-## Step 8. Commit on `main` and check
+## Step 6. Commit on `main` and check
 
 **What:** commit everything above on `main`, then run from the factory:
 

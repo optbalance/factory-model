@@ -20,7 +20,8 @@ implementer on Claude Code and a reviewer on Codex.
 Each module has a **goal**, what to **build**, the **harness-specific steps** (Pi, Claude Code,
 Codex, Antigravity), how to **try it** on the real product, and a **done when** check. This course
 explains how to build the factory; to run it, use the short references `docs/factory/factory-contract.md`
-(what the machine needs) and `docs/factory/operating-the-factory.md` (which command for which job). The neutral part is
+(what the machine needs) and `docs/factory/operating-the-factory.md` (which command for which job);
+what every adapter must do is in `docs/adapter/adapter-contract.md`. The neutral part is
 done once. The harness-specific steps are done for each harness you use. Start with Pi, and add
 the others once Module 3 passes. Don't move to the next module until you pass the check.
 
@@ -72,19 +73,15 @@ The factory and the product are **two separate repos** with a clear contract bet
 **The contract** (what the factory expects from any product):
 
 1. `AGENTS.md` at the product root: domain knowledge, layout, conventions. It's the most widely
-   supported context-file name, and Pi, Codex and Antigravity load it automatically. Claude Code reads
-   `CLAUDE.md`, so add a `CLAUDE.md → AGENTS.md` symlink if you use it (Module 1).
+   supported context-file name, so interactive sessions in the product pick it up. Factory runs
+   don't rely on that: `bin/agent-run` reads it from `main` and passes it to every role (Module 3).
 2. `scripts/verify`: **one** command that exits `0` when the code is healthy (build, lint,
    types, tests). The factory only ever calls this command.
 3. `docs/specs/`: where specs and task files live.
 4. `toolchain.Containerfile`: the image the product builds and tests in (JDK and Gradle, Node,
    Go…). The factory never installs a product's toolchain itself. It builds its own layers on top
    of this image (Module 2). The image holds every dependency `main` declares, so verify runs
-   offline.
-5. `scripts/deps`: prints the product's direct dependencies with their versions, one per line.
-   Tasks never change dependencies: those changes land on `main` first (Module 4). The runner
-   compares the output before and after each task and stops a task that changed it (Module 3).
-   Required when dependencies install into the worktree (npm, a venv), recommended otherwise.
+   offline. Tasks never change dependencies: those changes land on `main` first (Module 4).
 
 **How they connect:**
 
@@ -112,7 +109,7 @@ factory-model/
 │   └── sandbox-env            # env vars allowed into the sandbox
 ├── sandbox/
 │   └── Containerfile          # factory base layer of the worker image, FROM a product's toolchain image
-├── roles/                     # role prompts: planner.md, implementer.md, reviewer.md
+├── roles/                     # role prompts for headless roles: implementer.md, reviewer.md, scout.md
 ├── skills/                    # Agent Skills (SKILL.md): spec, plan, orchestrate, retro
 ├── guards/                    # neutral guard scripts + their tests
 ├── bin/                       # start, sandbox, build-worker, agent-run, run-task, fan-out, collect, eval, check-product, check-factory
@@ -144,7 +141,7 @@ factory-model/
 │           ├── skills -> ../../../skills
 │           ├── hooks.json
 │           └── guard.sh
-├── templates/                 # task.md, product AGENTS.md, verify, toolchain.Containerfile, deps (examples, copied by hand)
+├── templates/                 # task.md, product AGENTS.md, verify, toolchain.Containerfile (examples, copied by hand)
 ├── evals/
 ├── runs/                      # run logs (gitignored)
 └── docs/
@@ -156,6 +153,8 @@ factory-model/
     ├── factory/
     │   ├── factory-contract.md     # what the machine must provide (tools, sandbox, secrets)
     │   └── operating-the-factory.md # which command for which job
+    ├── adapter/
+    │   └── adapter-contract.md     # what every adapters/<harness>/ must provide
     └── factory-log.md
 ```
 
@@ -301,10 +300,7 @@ decides how much autonomy you can safely give later.
    `docs/specs/.gitkeep`.
 4. `toolchain.Containerfile`: the image that `scripts/verify` and the agents' build and test
    commands run in. If the product already has a CI or dev-container image, this file can be a
-   single `FROM` line that points at it. Its requirements are in the product contract (Step 6).
-5. `scripts/deps`: lists the product's direct dependencies with their versions, so the runner can
-   stop a task that changes them. Required when dependencies install into the worktree,
-   recommended otherwise. See the template below.
+   single `FROM` line that points at it. Its requirements are in the product contract (Step 5).
 
 Commit them on `main`. `fan-out` creates worktrees from `main`, so agents only see what's
 committed there.
@@ -313,10 +309,10 @@ What each file must do, and why, is in `docs/product/product-contract.md`: that'
 to look when you plug in a product. This module shows the templates.
 
 The templates below are **examples, not requirements**. Copy them to `factory-model/templates/`
-(`verify`, `AGENTS.md`, `toolchain.Containerfile`, `deps`) as a starting point for new products,
+(`verify`, `AGENTS.md`, `toolchain.Containerfile`) as a starting point for new products,
 and adapt them to each product. The factory only depends on the contract: `scripts/verify` exists,
 runs without prompts, and exits `0` when the code is healthy, `toolchain.Containerfile` builds an
-image it can run in, and `scripts/deps`, if present, lists the direct dependencies offline. `bin/check-product` (below) checks exactly that.
+image it can run in. `bin/check-product` (below) checks exactly that.
 
 #### Template: `scripts/verify`
 
@@ -432,25 +428,10 @@ FROM docker.io/library/node:22-bookworm-slim
 ```
 
 The image's requirements, where to point each build tool's cache, and a Gradle example that
-pre-fetches `main`'s dependencies are in `docs/product/product-contract.md`, Step 6. In short:
+pre-fetches `main`'s dependencies are in `docs/product/product-contract.md`, Step 5. In short:
 Debian or Ubuntu, usable by any user, caches at fixed paths, and complete offline for `main`.
 Tasks never change dependencies, so the image is the only place a dependency outside the worktree
 can come from.
-
-#### Template: `scripts/deps`
-
-Shown for a Node project:
-
-```bash
-#!/usr/bin/env bash
-# scripts/deps: the product's direct dependencies with their declared versions, one per line, sorted.
-# Offline, from the current directory. The runner compares its output before and after each task.
-set -euo pipefail
-jq -r '(.dependencies // {}) + (.devDependencies // {}) | to_entries[] | "\(.key)@\(.value)"' package.json | sort -u
-```
-
-The rules it must follow, when it's required, and a Gradle version are in
-`docs/product/product-contract.md`, Step 7.
 
 #### Factory script: `bin/check-product`
 
@@ -508,21 +489,6 @@ else case "${SANDBOX:-docker}" in
   *)             warn "toolchain.Containerfile is not committed on main (only SANDBOX=podman|docker need it)" ;;
 esac; fi
 
-# scripts/deps: without it, run-task can't stop a task that changes dependencies
-if git -C "$p" cat-file -e main:scripts/deps 2>/dev/null; then ok "scripts/deps exists"
-else warn "scripts/deps is not committed on main; run-task can't stop a task that changes dependencies (required if they install into the worktree)"; fi
-
-# CLAUDE.md -> AGENTS.md, only when some role runs on Claude Code
-routing="$FACTORY_HOME/config/routing.json"
-if [ -s "$routing" ] && jq -e 'any(.roles[]; .harness == "claude")' "$routing" >/dev/null 2>&1; then
-  if [ "$(git -C "$p" ls-tree main CLAUDE.md | cut -d' ' -f1)" = 120000 ] \
-     && [ "$(git -C "$p" cat-file -p main:CLAUDE.md)" = AGENTS.md ]; then
-    ok "CLAUDE.md -> AGENTS.md"
-  else
-    fail "a role runs on Claude Code, but CLAUDE.md is not a committed symlink to AGENTS.md"
-  fi
-fi
-
 # --run: verify in a fresh, sandboxed, offline worktree
 if [ "$run" = 1 ]; then
   if [ "$mode" != 100755 ]; then
@@ -540,14 +506,6 @@ if [ "$run" = 1 ]; then
       tail -n 20 "$rundir/verify.log" | sed 's/^/      /'
     fi
     [ $((SECONDS - start)) -le 120 ] || warn "verify took over 2 minutes; consider scripts/verify --quick"
-    if git -C "$p" cat-file -e main:scripts/deps 2>/dev/null; then
-      if n=$("$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- bash scripts/deps 2>"$rundir/deps.log" | wc -l) \
-         && [ "$n" -gt 0 ]; then
-        ok "scripts/deps lists $n dependencies, offline"
-      else
-        fail "scripts/deps failed or printed nothing in a fresh offline worktree (log: $rundir/deps.log)"
-      fi
-    fi
   fi
 fi
 
@@ -572,13 +530,16 @@ message tells it how. Dependencies outside the worktree come with the toolchain 
 
 **Pi:**
 
-1. Nothing to add. Pi loads `AGENTS.md` automatically.
+1. Nothing to add. Pi loads `AGENTS.md` automatically in interactive sessions.
 2. Try it: `pi --model <cheap-model>` in the product.
 
 **Claude Code:**
 
-1. Add the symlink, so `AGENTS.md` stays the only source of truth:
-   `ln -s AGENTS.md CLAUDE.md && git add CLAUDE.md`. Add it to `templates/` too.
+1. Nothing to add. Claude Code (v2.1.277+) reads `AGENTS.md` when the product has no `CLAUDE.md`.
+   You don't need a `CLAUDE.md`. If you keep one, make it a symlink to `AGENTS.md`: any other
+   `CLAUDE.md` replaces `AGENTS.md` in your interactive sessions. Factory runs
+   don't load either file themselves (`--setting-sources user` skips project instructions);
+   `bin/agent-run` passes `AGENTS.md` explicitly (Module 3).
 2. Try it: `claude --model sonnet` (or `haiku`) in the product.
 
 **Codex:**
@@ -723,6 +684,8 @@ FACTORY_HOME="${FACTORY_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"; export FACTOR
 mode="${SANDBOX:-docker}"
 net=open; if [ "$1" = --net ]; then net=$2; shift 2; fi
 wt=$1; rundir=$2; shift 2; [ "$1" = -- ] && shift
+mkdir -p "$rundir"                                   # created as you, not by the container engine
+wt=$(realpath -ms "$wt"); rundir=$(realpath -ms "$rundir")   # mounts need absolute paths
 
 # git metadata: shared repo read-only, this worktree's own git dir writable
 common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)
@@ -978,7 +941,7 @@ It blocks:
   the most dangerous case early: a model writing lockfile text produces versions, hashes and
   download URLs that look right but aren't, in a diff too long for anyone to read. It only sees the
   agent's file-edit tools. A change made through a package manager is caught by the offline verify
-  or the dependency gate (Module 3), and the reviewer flags any lockfile change in the diff.
+  (Module 3), and the reviewer flags any lockfile change in the diff.
 - **Harness config inside the worktree** (`.pi/`, `.claude/`, `.codex/`, `.agents/`, `.agent/`,
   `.mcp.json`). An agent that writes harness config could change how the next run behaves. The
   harness's own files under `$HOME` (for example Claude Code's plans) are outside the worktree and
@@ -1376,9 +1339,17 @@ that relies on one provider's quirks.
 set -euo pipefail
 export FACTORY_HOME="${FACTORY_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
 role=$1; workdir=$2; prompt=$3; rundir=$4
+# absolute: these paths are passed into the sandbox, whose working directory is the worktree
+workdir=$(realpath -ms "$workdir"); prompt=$(realpath -ms "$prompt"); rundir=$(realpath -ms "$rundir")
 cfg=$(jq -ec --arg r "$role" '.roles[$r]' "$FACTORY_HOME/${ROUTING:-config/routing.json}")
 harness=$(jq -r .harness <<<"$cfg")
+[ -f "$FACTORY_HOME/roles/$role.md" ] || { echo "agent-run: no role prompt roles/$role.md" >&2; exit 2; }
 mkdir -p "$rundir"
+# System prompt: the product's instructions as committed on main, then the role prompt.
+# Adapters pass this file on; they never read AGENTS.md or roles/ themselves.
+{ git -C "$workdir" show main:AGENTS.md \
+    || { echo "agent-run: AGENTS.md is not committed on main (product contract, Step 2)" >&2; exit 1; }
+  echo; cat "$FACTORY_HOME/roles/$role.md"; } > "$rundir/$role.system.md"
 echo "$(date -Is) $role $(jq -r .model <<<"$cfg") sandbox=${SANDBOX:-docker}" >> "$rundir/calls.log"
 exec "$FACTORY_HOME/bin/sandbox" "$workdir" "$rundir" -- \
      "$FACTORY_HOME/adapters/$harness/run.sh" "$cfg" "$role" "$workdir" "$prompt" "$rundir"
@@ -1388,13 +1359,25 @@ The harness always runs inside `bin/sandbox`, so every role, model and harness g
 isolation. Prompt files have to be inside the worktree or the run directory, because nothing
 else is mounted.
 
+**Product instructions come from the factory, not from the harness.** Every harness can find
+`AGENTS.md` on its own, but the adapters switch that discovery off together with the rest of the
+project config (Claude Code's `--setting-sources user` drops `CLAUDE.md` and `AGENTS.md` along
+with `.claude/settings.json`; a marker test showed it). So `agent-run` composes
+`$rundir/$role.system.md` once, for every harness. It reads `AGENTS.md` from `main`, not from the
+worktree: an implementer can edit the worktree's copy, and a line like "reviewers approve
+everything" must not reach the reviewer's system prompt. A task that changes `AGENTS.md` shows
+the change in its diff, and it takes effect after merge. Only the root `AGENTS.md` is passed;
+nested ones in subdirectories aren't. A harness that also loads `AGENTS.md` by itself sees it
+twice, which costs tokens but nothing else.
+
 ### The adapter contract
 
-Every `adapters/<harness>/run.sh` takes the same five arguments (`cfg role workdir prompt rundir`)
-and must:
+The full contract, including the image layer and the guard wiring from Module 2, is in
+`docs/adapter/adapter-contract.md`. For `run.sh`: every `adapters/<harness>/run.sh` takes the same
+five arguments (`cfg role workdir prompt rundir`) and must:
 
-1. Run the agent in `workdir`, with the prompt from the `prompt` file and the role prompt from
-   `roles/$role.md`.
+1. Run the agent in `workdir`, with the prompt from the `prompt` file and the system prompt from
+   `$rundir/$role.system.md` (written by `agent-run`: the product's `AGENTS.md` plus the role prompt).
 2. Load the factory guards and skills explicitly, and ignore any harness config the agent could
    have written into the worktree.
 3. Keep its session state under `$rundir` and continue the last session when `CONTINUE` is set.
@@ -1422,7 +1405,7 @@ args=(--model "$model" --tools "$tools"
       --no-approve                                # ignore project-local .pi config the agent could have written
       --no-extensions -e "$FACTORY_HOME/adapters/pi/extensions/factory-guards.ts"
       --no-skills --skill "$FACTORY_HOME/skills"  # same skills every run, whatever is installed
-      --append-system-prompt "$FACTORY_HOME/roles/$role.md"
+      --append-system-prompt "$rundir/$role.system.md"
       --session-dir "$rundir/sessions/$role")
 [ -n "${CONTINUE:-}" ] && args+=(--continue)
 
@@ -1461,10 +1444,10 @@ what is installed on the machine.
    export DISABLE_AUTOUPDATER=1
    args=(-p --model "$model" --effort "$effort" --tools "$tools"
          --permission-mode bypassPermissions          # bin/sandbox is the boundary; hooks still run
-         --setting-sources user                       # ignore .claude/settings*.json in the worktree
+         --setting-sources user                       # ignore .claude/, CLAUDE.md, AGENTS.md in the worktree
          --strict-mcp-config                          # ignore .mcp.json in the worktree
          --plugin-dir "$FACTORY_HOME/adapters/claude/plugin"   # guards + skills, same every run
-         --append-system-prompt-file "$FACTORY_HOME/roles/$role.md")
+         --append-system-prompt-file "$rundir/$role.system.md")   # AGENTS.md from main + role
    [ -n "$budget" ] && args+=(--max-budget-usd "$budget")
    [ -n "${CONTINUE:-}" ] && args+=(--continue)
 
@@ -1510,8 +1493,8 @@ what is installed on the machine.
    else args+=(--sandbox "$sandbox"); fi
 
    sub=(exec); [ -n "${CONTINUE:-}" ] && sub=(exec resume --last)
-   # Codex has no append-system-prompt flag: the role prompt goes first, so it stays a stable prefix
-   input() { cat "$FACTORY_HOME/roles/$role.md"; echo; cat "$prompt"; }
+   # Codex has no append-system-prompt flag: the system prompt goes first, so it stays a stable prefix
+   input() { cat "$rundir/$role.system.md"; echo; cat "$prompt"; }
    if [ "$output" = text ]; then
      input | codex "${sub[@]}" "${args[@]}" -o "$rundir/$role.out.md" - > "$rundir/$role.log"
    else
@@ -1575,8 +1558,8 @@ what is installed on the machine.
    [ -n "$effort" ] && args+=(--effort "$effort")
    [ "$access" = full ] && args+=(--dangerously-skip-permissions)   # read-only: the deny list decides
    [ -n "${CONTINUE:-}" ] && args+=(--continue)
-   # no append-system-prompt flag: the role prompt goes first, so it stays a stable prefix
-   input="$(cat "$FACTORY_HOME/roles/$role.md"; echo; cat "$prompt")"
+   # no append-system-prompt flag: the system prompt goes first, so it stays a stable prefix
+   input="$(cat "$rundir/$role.system.md"; echo; cat "$prompt")"
 
    cd "$workdir"
    if [ "$output" = text ]; then
@@ -1605,22 +1588,11 @@ what is installed on the machine.
 #!/usr/bin/env bash
 # usage: run-task <worktree> <task-file> <run-dir>   (task-file: a path inside the worktree)
 set -euo pipefail
-export LC_ALL=C                                 # sort and diff must agree on the order
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
 wt=$1; task=$2; rundir=$3; mkdir -p "$rundir"
+branch=$(git -C "$wt" symbolic-ref -q HEAD) || { echo "run-task: $wt is not on a branch" >&2; exit 2; }
 run() { "$FACTORY_HOME/bin/agent-run" "$@"; }
 verify() { "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- scripts/verify > "$rundir/verify.log" 2>&1; }
-deps() { "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- bash "$rundir/deps.sh" 2>"$rundir/deps.log" | sort -u; }
-
-# dependency gate (skipped if the product has no scripts/deps): main's copy of the script, so the
-# task can't change how dependencies are listed. deps_changed is true when the task changed them.
-gate=0
-if git -C "$wt" show main:scripts/deps > "$rundir/deps.sh" 2>/dev/null && deps > "$rundir/deps.before"; then gate=1; fi
-deps_changed() {
-  [ $gate = 1 ] || return 1
-  deps > "$rundir/deps.after" || { echo "scripts/deps failed, see deps.log" > "$rundir/deps.diff"; return 0; }
-  ! diff "$rundir/deps.before" "$rundir/deps.after" > "$rundir/deps.diff"
-}
 
 { printf 'Complete the task in %s. Write REPORT.md as it specifies.\n' "$task"
   printf 'Do not add, remove or upgrade dependencies: everything this task needs is already declared on main and in the image. If you need a change, stop and explain which one and why under open questions in REPORT.md.\n'
@@ -1628,20 +1600,26 @@ deps_changed() {
 run implementer "$wt" "$rundir/brief.md" "$rundir" || true
 
 status=red
-if deps_changed; then status=deps-changed                     # stop before any fix round
-else
-  for role in implementer implementer implementer-strong; do    # 2 fix rounds, then escalate
-    if verify; then status=green; break; fi
-    { cat "$rundir/brief.md"                                     # implementer-strong starts a new session
-      echo "scripts/verify failed. Fix the cause (don't weaken the tests). Output:"; tail -60 "$rundir/verify.log"; } > "$rundir/fix.md"
-    if [ "$role" = implementer ]; then CONTINUE=1 run "$role" "$wt" "$rundir/fix.md" "$rundir" || true
-    else run "$role" "$wt" "$rundir/fix.md" "$rundir" || true; fi
-  done
-  [ $status = red ] && verify && status=green
-  deps_changed && status=deps-changed
+for role in implementer implementer implementer-strong; do      # 2 fix rounds, then escalate
+  if verify; then status=green; break; fi
+  { cat "$rundir/brief.md"                                       # implementer-strong starts a new session
+    echo "scripts/verify failed. Fix the cause (don't weaken the tests). Output:"; tail -60 "$rundir/verify.log"; } > "$rundir/fix.md"
+  if [ "$role" = implementer ]; then CONTINUE=1 run "$role" "$wt" "$rundir/fix.md" "$rundir" || true
+  else run "$role" "$wt" "$rundir/fix.md" "$rundir" || true; fi
+done
+[ $status = red ] && verify && status=green
+# The agent can't move the branch (the shared repo is read-only in the sandbox), but it can move
+# HEAD off it (git checkout --detach). Then the work wouldn't be on the branch you merge.
+if [ "$(git -C "$wt" symbolic-ref -q HEAD)" != "$branch" ]; then
+  status=red; echo "run-task: HEAD is no longer on ${branch#refs/heads/}; the agent moved it" | tee "$rundir/head.log" >&2
 fi
 echo "$status" > "$rundir/status"
 ```
+
+Inside the sandbox the agent can't commit, branch, tag or move a ref: the product's shared
+`.git` is mounted read-only, and only the worktree's own git dir is writable. The one git change
+it can make is moving `HEAD` off the task's branch, which the last check turns into `red`
+(reason in `head.log`), whatever command did it.
 
 The gate is outside the harness, so it works the same with any model. The model can't declare
 itself done. Only `scripts/verify` decides.
@@ -1651,16 +1629,17 @@ approved by you, and lands on `main` before the tasks that need it run (Module 4
 rebuilds the worker image from `main` first, so the image already holds everything a task needs.
 The implementer has network only because the harness needs it to reach the model.
 
-Two things enforce the rule:
+What enforces the rule:
 
 - **verify, offline.** A dependency the image doesn't have can't be resolved, and nothing an agent
-  downloads survives into verify, because every sandbox call is a new container. This covers
-  build tools that download outside the worktree (Gradle, Maven, sbt, Cargo, Go).
-- **the dependency gate.** npm and pip into a venv install into the worktree, so verify would
-  pass. The runner runs `main`'s `scripts/deps` before the implementer, right after its first
-  call, and again at the end. Any difference sets the status to `deps-changed`: the task is neither
-  committed nor reviewed, and `deps.diff` shows what changed. For the other build tools the gate
-  turns a resolution error into the same clear status, before any fix round is spent on it.
+  downloads survives into verify, because every sandbox call is a new container. This is a hard
+  stop for build tools that download outside the worktree (Gradle, Maven, sbt, Cargo, Go).
+- **the brief and the review.** The brief forbids dependency changes, the product's `AGENTS.md`
+  lists dependency files and lockfiles under "never touch", and a change to them shows in the
+  diff the reviewer reads (Module 5). The file guard blocks hand edits of lockfiles (Module 2).
+
+Package managers that install into the worktree (npm, pip into a venv) have no hard stop: an
+agent could install a package that survives into verify. See `docs/todo.md`.
 
 The fix rounds repeat the brief: `implementer-strong` starts a new session and would otherwise
 see only the verify output, not the task or the dependency rule.
@@ -1732,7 +1711,7 @@ version, which tasks need it, and why. It prefers what the product already uses.
 A dependency then gets a review of its own instead of hiding inside a feature diff, its code is
 first downloaded by the image build on the host (no agent session, no API keys), and parallel
 tasks never edit the same manifest and lockfile. If the planner missed one, the implementer stops
-and says so in `REPORT.md` (status `red`), or the runner stops it (`deps-changed`). The
+and says so in `REPORT.md`, or the offline verify fails (status `red`). The
 orchestrator brings it to you (Module 7).
 
 Run both interactively with the planner's model, in any harness.
@@ -1795,8 +1774,8 @@ fi
 
 The runner commits and builds the diff, so the reviewer needs no write or bash tools. Its
 read-only access is enforced by `routing.json`, not by asking nicely. The reviewer role also
-flags any change to build files or lockfiles: tasks don't change dependencies, and the gate only
-sees direct dependencies, not build plugins or other build settings.
+flags any change to build files or lockfiles: tasks don't change dependencies, and offline verify
+doesn't catch every such change (packages installed into the worktree, build plugins, settings).
 
 The easiest way to get a different family is a different **harness**: implementer on Claude
 Code, reviewer on Codex, or the other way round. Pi can serve either side.
@@ -1874,9 +1853,8 @@ through `bin/sandbox`, so each worktree gets its own isolated sandbox. Task file
 committed on `main` before fan-out, so each worktree contains its own copy. That copy is the
 path the agent is given, because it's the only one mounted in the sandbox.
 
-**Build** `bin/collect`: for each task in a run, print the id, the status (`green`, `red` or
-`deps-changed`), the review verdict, the `REPORT.md` summary and open questions, the diff stat,
-`deps.diff` for `deps-changed`, and the models used (from `calls.log`). This is your dashboard.
+**Build** `bin/collect`: for each task in a run, print the id, the status (`green` or `red`),
+the review verdict, the `REPORT.md` summary and open questions, the diff stat, and the models used (from `calls.log`). This is your dashboard.
 
 Rules:
 - Only run tasks together if their `touches` don't overlap and they don't depend on each other.
@@ -1934,8 +1912,8 @@ the design rules, it only *calls* the scripts and makes the judgments:
 1. Reads the task files and builds batches from `depends_on` and `touches`.
 2. Runs `bin/fan-out` for each batch and `bin/collect` afterwards.
 3. Triages the results. It answers questions it can answer from the spec, rewrites unclear task
-   files, and re-queues failures. When a task needs a dependency change (`deps-changed`, or a
-   request in `REPORT.md`), it either rewrites the task so the change isn't needed, or brings it
+   files, and re-queues failures. When a task needs a dependency change (a request in
+   `REPORT.md`, or a verify failure that can't resolve a dependency), it either rewrites the task so the change isn't needed, or brings it
    to you. Once you approve it, the change lands on `main` (Module 4) and the task is re-queued.
 4. Shows **you** only: branches ready to merge, questions that need you, and escalations.
 5. **Human gate:** it never merges. You merge, then clean up with `git worktree remove` and
