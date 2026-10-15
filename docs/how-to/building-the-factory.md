@@ -1591,6 +1591,7 @@ set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
 wt=$1; task=$2; rundir=$3; mkdir -p "$rundir"
 branch=$(git -C "$wt" symbolic-ref -q HEAD) || { echo "run-task: $wt is not on a branch" >&2; exit 2; }
+[ -f "$wt/$task" ] || { echo "run-task: task file $task not found in $wt (give it relative to the worktree)" >&2; exit 2; }
 run() { "$FACTORY_HOME/bin/agent-run" "$@"; }
 verify() { "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- scripts/verify > "$rundir/verify.log" 2>&1; }
 

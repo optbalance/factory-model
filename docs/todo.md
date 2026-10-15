@@ -40,3 +40,12 @@ when it's fixed.
   first. Possible fix: `run-task` calls `agent-run planner` (read-only tools) before the
   implementer, the planner writes `$rundir/approach.md`, and `run-task` appends it to `brief.md`;
   then write `roles/planner.md`. Cost: one strong-model call per task.
+- **Module 3's "Done when" provider switch is untested.** Only one provider and harness (Claude
+  Code) is set up, so the check in `docs/how-to/building-the-factory.md` (Module 3, "Done when"):
+  switch the implementer to another provider by editing only `config/routing.json`, and the same
+  task still goes green, was replaced by a model switch within Claude (`sonnet` → `opus`). That
+  proves model routing, not that `bin/agent-run`, `bin/run-task` and the run artifacts they read
+  are free of Claude-specific assumptions. What could go wrong: the second adapter breaks the
+  runner, or needs changes outside `adapters/`. Fix: when a second provider or harness is
+  available, write its adapter (`docs/adapter/adapter-contract.md`), switch only the implementer's
+  routing entry, and rerun a small task to green; then do the same for the harness.
