@@ -690,6 +690,7 @@ wt=$(realpath -ms "$wt"); rundir=$(realpath -ms "$rundir")   # mounts need absol
 # git metadata: shared repo read-only, this worktree's own git dir writable
 common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)
 own=$(git -C "$wt" rev-parse --path-format=absolute --git-dir)
+# in a main checkout (not a worktree) they are the same .git; it is then mounted read-only only
 
 # worker image: one per product, named after the product repo (see bin/build-worker)
 product=$(basename "$(dirname "$common")"); product=${product,,}; product=${product//[^a-z0-9._-]/-}
@@ -709,7 +710,8 @@ case "$mode" in
   podman|docker)
     args=(run --rm -i -w "$wt" -e HOME=/tmp
           -v "$FACTORY_HOME:$FACTORY_HOME:ro" -v "$wt:$wt" -v "$rundir:$rundir"
-          -v "$common:$common:ro" -v "$own:$own")
+          -v "$common:$common:ro")
+    [ "$own" != "$common" ] && args+=(-v "$own:$own")
     [ "$net" = none ] && args+=(--network none)
     args+=(--user "$(id -u):$(id -g)")                              # files stay owned by you
     [ "$mode" = podman ] && args+=(--userns=keep-id)                 # rootless: map your ID to itself
@@ -722,9 +724,10 @@ case "$mode" in
           --proc /proc --dev /dev --tmpfs /tmp)
     for p in ${SANDBOX_RO_PATHS:-}; do args+=(--ro-bind "$p" "$p"); done   # e.g. a user-level Node install
     args+=(--ro-bind "$FACTORY_HOME" "$FACTORY_HOME" --bind "$wt" "$wt" --bind "$rundir" "$rundir"
-           --ro-bind "$common" "$common" --bind "$own" "$own"
+           --ro-bind "$common" "$common"
            --unshare-all --die-with-parent --clearenv
            --setenv HOME /tmp --setenv PATH "$PATH" --chdir "$wt")
+    [ "$own" != "$common" ] && args+=(--bind "$own" "$own")
     [ "$net" = open ] && args+=(--share-net)
     for n in "${names[@]}"; do [ -n "${!n:-}" ] && args+=(--setenv "$n" "${!n}"); done
     exec bwrap "${args[@]}" "$@" ;;
@@ -1071,6 +1074,10 @@ export default function (pi: ExtensionAPI) {
    ```bash
    #!/usr/bin/env bash
    # PreToolUse hook: JSON on stdin → neutral guard. Exit 2 blocks; stderr goes to the model.
+   # The plugin lives in the factory, so FACTORY_HOME is known even if the shell doesn't export it.
+   FACTORY_HOME="${FACTORY_HOME:-$(cd "$(dirname "$(readlink -f "$0")")/../../../.." && pwd)}"; export FACTORY_HOME
+   [ -x "$FACTORY_HOME/guards/bash.sh" ] \
+     || { echo "Blocked by factory: guards not found in $FACTORY_HOME; nothing runs unguarded" >&2; exit 2; }
    in=$(cat)
    case "$(jq -r .tool_name <<<"$in")" in
      Bash) exec "$FACTORY_HOME/guards/bash.sh" "$(jq -r '.tool_input.command // ""' <<<"$in")" ;;
@@ -1586,7 +1593,7 @@ what is installed on the machine.
 
 ```bash
 #!/usr/bin/env bash
-# usage: run-task <worktree> <task-file> <run-dir>   (task-file: a path inside the worktree)
+# usage: run-task <worktree> <task-file> <run-dir>   (task-file: relative to the worktree)
 set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
 wt=$1; task=$2; rundir=$3; mkdir -p "$rundir"
@@ -1715,7 +1722,10 @@ tasks never edit the same manifest and lockfile. If the planner missed one, the 
 and says so in `REPORT.md`, or the offline verify fails (status `red`). The
 orchestrator brings it to you (Module 7).
 
-Run both interactively with the planner's model, in any harness.
+Run both interactively with the planner's model, in any harness. Start the session with
+`bin/start`, like the orchestrator: the scout runs in the sandbox and needs the factory's
+credentials, and `bin/start` also sets `FACTORY_HOME`, which the skill uses to find
+`bin/agent-run`. Without it the plan skill reads the code itself.
 
 ### Harness-specific steps
 
@@ -1726,11 +1736,17 @@ Run both interactively with the planner's model, in any harness.
 
 **Claude Code:**
 
-1. `claude-factory --model opus --effort high` (the alias from Module 0).
-2. Invoke them as `/factory:spec` and `/factory:plan`.
+1. Route the `claude-factory` alias from Module 0 through `bin/start`, so factory sessions get
+   `FACTORY_HOME` and the credentials. Replace its line in `~/.bashrc` with:
+   ```bash
+   alias claude-factory='~/factory-model/bin/start claude --plugin-dir ~/factory-model/adapters/claude/plugin'
+   ```
+   The session then signs in with the token from `~/.config/factory/env` (same subscription) and
+   can read every secret in that file, as the orchestrator can. Plain `claude` stays unchanged.
+2. In the product repo: `claude-factory --model opus --effort high`. Invoke the skills as
+   `/factory:spec` and `/factory:plan`.
 3. When the plan skill calls `bin/agent-run scout`, Claude Code asks for permission to run it.
-   Allow it once for the session, or add `Bash(~/factory-model/bin/agent-run:*)` to your user
-   settings' allow list.
+   Allow it.
 
 **Codex:**
 
@@ -1843,7 +1859,7 @@ esac
 for task in "$@"; do
   id=$(basename "$task" .md); wt="${PRODUCT}-wt/$id"
   git -C "$PRODUCT" worktree add -q -b "factory/$id" "$wt" main
-  "$FACTORY_HOME/bin/run-task" "$wt" "$wt/$task" "$RUN/$id" &
+  "$FACTORY_HOME/bin/run-task" "$wt" "$task" "$RUN/$id" &
 done
 wait
 echo "Run complete: $RUN"

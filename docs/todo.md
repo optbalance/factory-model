@@ -49,3 +49,12 @@ when it's fixed.
   runner, or needs changes outside `adapters/`. Fix: when a second provider or harness is
   available, write its adapter (`docs/adapter/adapter-contract.md`), switch only the implementer's
   routing entry, and rerun a small task to green; then do the same for the harness.
+- **Fix rounds and escalation in `bin/run-task` have never run.** Module 3's second "Try it"
+  (`docs/how-to/building-the-factory.md`) was skipped: no run so far failed verify, so the fix
+  loop (`fix.md`, `CONTINUE=1` on the implementer's session, then a fresh `implementer-strong`
+  session) is untested. What could go wrong: `--continue` doesn't find the session under
+  `$rundir/claude/implementer`, the fix prompt lacks what the model needs, or escalation never
+  triggers, and a task that could be fixed ends `red`. Test it when the first real task goes red,
+  or with a task the existing tests contradict; expect `calls.log` to show three `implementer`
+  calls and one `implementer-strong`. Note that an implementer that correctly refuses and changes
+  nothing still ends `green` until the Module 5 reviewer exists.

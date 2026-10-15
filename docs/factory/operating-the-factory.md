@@ -9,6 +9,7 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 | Job | Command | Status |
 |---|---|---|
 | Start the orchestrator | `bin/start <harness>` | ✓ |
+| Specify and plan work | skills `spec`, then `plan`, in a session started with `bin/start` in the product repo | ✓ |
 | Check the factory layout | `bin/check-factory` | ✓ |
 | Test the guards | `guards/test.sh` | ✓ |
 | Build or rebuild a product's worker image | `bin/build-worker <product-dir> [harness...]` | ✓ |

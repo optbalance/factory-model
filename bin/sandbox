@@ -12,6 +12,7 @@ wt=$(realpath -ms "$wt"); rundir=$(realpath -ms "$rundir")   # mounts need absol
 # git metadata: shared repo read-only, this worktree's own git dir writable
 common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)
 own=$(git -C "$wt" rev-parse --path-format=absolute --git-dir)
+# in a main checkout (not a worktree) they are the same .git; it is then mounted read-only only
 
 # worker image: one per product, named after the product repo (see bin/build-worker)
 product=$(basename "$(dirname "$common")"); product=${product,,}; product=${product//[^a-z0-9._-]/-}
@@ -31,7 +32,8 @@ case "$mode" in
   podman|docker)
     args=(run --rm -i -w "$wt" -e HOME=/tmp
           -v "$FACTORY_HOME:$FACTORY_HOME:ro" -v "$wt:$wt" -v "$rundir:$rundir"
-          -v "$common:$common:ro" -v "$own:$own")
+          -v "$common:$common:ro")
+    [ "$own" != "$common" ] && args+=(-v "$own:$own")
     [ "$net" = none ] && args+=(--network none)
     args+=(--user "$(id -u):$(id -g)")                              # files stay owned by you
     [ "$mode" = podman ] && args+=(--userns=keep-id)                 # rootless: map your ID to itself
@@ -44,9 +46,10 @@ case "$mode" in
           --proc /proc --dev /dev --tmpfs /tmp)
     for p in ${SANDBOX_RO_PATHS:-}; do args+=(--ro-bind "$p" "$p"); done   # e.g. a user-level Node install
     args+=(--ro-bind "$FACTORY_HOME" "$FACTORY_HOME" --bind "$wt" "$wt" --bind "$rundir" "$rundir"
-           --ro-bind "$common" "$common" --bind "$own" "$own"
+           --ro-bind "$common" "$common"
            --unshare-all --die-with-parent --clearenv
            --setenv HOME /tmp --setenv PATH "$PATH" --chdir "$wt")
+    [ "$own" != "$common" ] && args+=(--bind "$own" "$own")
     [ "$net" = open ] && args+=(--share-net)
     for n in "${names[@]}"; do [ -n "${!n:-}" ] && args+=(--setenv "$n" "${!n}"); done
     exec bwrap "${args[@]}" "$@" ;;
