@@ -1777,22 +1777,104 @@ Then read every task file and ask yourself: *"Could a new contractor do this fro
 
 **Goal:** a second model family checks every green branch before you see it.
 
-**Extend `bin/run-task`** after the verify gate:
+**Extend `bin/run-task`**: after the verify gate, the runner commits the work and a reviewer
+checks it. If the verdict is `changes-needed`, the findings become a fix brief for the
+implementer, followed by verify and review again. At most 2 such rounds, then the branch goes to
+you with the last verdict. The whole script:
 
 ```bash
+#!/usr/bin/env bash
+# usage: run-task <worktree> <task-file> <run-dir>   (task-file: relative to the worktree)
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
+wt=$1; task=$2; rundir=$3; mkdir -p "$rundir"
+branch=$(git -C "$wt" symbolic-ref -q HEAD) || { echo "run-task: $wt is not on a branch" >&2; exit 2; }
+[ -f "$wt/$task" ] || { echo "run-task: task file $task not found in $wt (give it relative to the worktree)" >&2; exit 2; }
+run() { "$FACTORY_HOME/bin/agent-run" "$@"; }
+verify() { "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- scripts/verify > "$rundir/verify.log" 2>&1; }
+
+{ printf 'Complete the task in %s. Write REPORT.md as it specifies.\n' "$task"
+  printf 'Do not add, remove or upgrade dependencies: everything this task needs is already declared on main and in the image. If you need a change, stop and explain which one and why under open questions in REPORT.md.\n'
+} > "$rundir/brief.md"
+
+# The implementer: its session continues across fix rounds; implementer-strong starts a new one.
+worker=implementer; fresh=1
+call() {
+  if [ $fresh = 1 ]; then fresh=0; run "$worker" "$wt" "$1" "$rundir" || true
+  else CONTINUE=1 run "$worker" "$wt" "$1" "$rundir" || true; fi
+}
+# Run the worker on a prompt, then fix verify failures: 2 rounds, then escalate once.
+work() {
+  call "$1"
+  for n in 1 2 3; do
+    verify && return 0
+    if [ $n = 3 ]; then [ $worker = implementer-strong ] && return 1; worker=implementer-strong; fresh=1; fi
+    { cat "$rundir/brief.md"
+      echo "scripts/verify failed. Fix the cause (don't weaken the tests). Output:"; tail -60 "$rundir/verify.log"; } > "$rundir/fix.md"
+    call "$rundir/fix.md"
+  done
+  verify
+}
+# The agent can't move the branch (the shared repo is read-only in the sandbox), but it can move
+# HEAD off it (git checkout --detach). Then the work wouldn't be on the branch you merge.
+head_ok() {
+  [ "$(git -C "$wt" symbolic-ref -q HEAD)" = "$branch" ] && return 0
+  echo "run-task: HEAD is no longer on ${branch#refs/heads/}; the agent moved it" | tee "$rundir/head.log" >&2; return 1
+}
+# Commit the work (REPORT.md stays out of the product's history), then have it reviewed.
+review() {
+  git -C "$wt" add -A -- . ':(top,exclude)REPORT.md' || return 1
+  git -C "$wt" diff --cached --quiet || git -C "$wt" commit -qm "factory: $(basename "$task" .md)" || return 1
+  git -C "$wt" diff main...HEAD > "$rundir/diff.patch" || return 1
+  { printf 'Task: %s\nDiff: %s\nReport: REPORT.md\n' "$task" "$rundir/diff.patch"
+    [ "$1" = 1 ] || printf 'This is review round %s: the implementer has addressed your findings, and the diff file now holds the whole change again. Review all of it.\n' "$1"
+  } > "$rundir/review-brief.md"
+  rm -f "$rundir/reviewer.out.md"
+  if [ "$1" = 1 ]; then run reviewer "$wt" "$rundir/review-brief.md" "$rundir" || true
+  else CONTINUE=1 run reviewer "$wt" "$rundir/review-brief.md" "$rundir" || true; fi
+  cp "$rundir/reviewer.out.md" "$rundir/review-$1.md" 2>/dev/null || true
+  verdict=$(sed -n '1{s/[[:space:]]*$//;s/^VERDICT: //p}' "$rundir/reviewer.out.md" 2>/dev/null || true)
+  case "$verdict" in approve|changes-needed) ;; *) verdict=error ;; esac   # no answer, or no VERDICT line
+}
+
+status=red; verdict=none
+work "$rundir/brief.md" && status=green
+head_ok || status=red
 if [ $status = green ]; then
-  git -C "$wt" add -A && git -C "$wt" commit -qm "factory: $(basename "$task" .md)"
-  git -C "$wt" diff main...HEAD > "$rundir/diff.patch"
-  printf 'Task: %s\nDiff: %s\n' "$task" "$rundir/diff.patch" > "$rundir/review-brief.md"
-  run reviewer "$wt" "$rundir/review-brief.md" "$rundir" || true
-  head -1 "$rundir/reviewer.out.md"                    # VERDICT: …
+  for round in 1 2 3; do                     # review, then up to 2 rounds of fixing its findings
+    review $round || { echo "run-task: committing the work failed" >&2; status=red; verdict=error; break; }
+    [ "$verdict" = changes-needed ] && [ $round -lt 3 ] || break
+    { echo "A reviewer found problems in your change. Fix each finding (don't weaken the tests), then update REPORT.md:"
+      tail -n +2 "$rundir/reviewer.out.md"; } > "$rundir/review-fix.md"
+    if ! work "$rundir/review-fix.md" || ! head_ok; then status=red; break; fi
+  done
 fi
+[ -f "$wt/REPORT.md" ] && cp "$wt/REPORT.md" "$rundir/REPORT.md"
+echo "$status" > "$rundir/status"; echo "$verdict" > "$rundir/verdict"
+echo "run-task: verify $status, review $verdict"
 ```
 
-The runner commits and builds the diff, so the reviewer needs no write or bash tools. Its
-read-only access is enforced by `routing.json`, not by asking nicely. The reviewer role also
-flags any change to build files or lockfiles: tasks don't change dependencies, and offline verify
-doesn't catch every such change (packages installed into the worktree, build plugins, settings).
+What changed from Module 3:
+
+- **The runner commits, then builds the diff,** so the reviewer needs no write or bash tools. Its
+  read-only access is enforced by `routing.json`, not by asking nicely. `REPORT.md` is kept out
+  of the commit, so it never reaches the product's history; the reviewer reads it in the
+  worktree, and the runner copies it to the run directory.
+- **A run that changed nothing is reviewed too.** Its diff is empty, so the reviewer returns
+  `changes-needed`. Before this step, a no-op run counted as done because verify passed on the
+  old code.
+- **Fix rounds continue sessions.** The implementer continues the session of whoever worked last
+  (after an escalation, `implementer-strong`), and the reviewer continues its own, so it checks
+  its earlier findings against the new diff. Each review is kept as `review-<n>.md`.
+- **Two result files:** `status` is `green` or `red` (verify and the HEAD check), and `verdict` is
+  `approve`, `changes-needed`, `error` (the reviewer failed or wrote no `VERDICT:` line) or
+  `none` (not reviewed, because the status is red). A branch is ready for you when it is `green`
+  and `approve`.
+- **The HEAD check** runs before anything is committed, and again after every fix round.
+
+The reviewer role also flags any change to build files or lockfiles: tasks don't change
+dependencies, and offline verify doesn't catch every such change (packages installed into the
+worktree, build plugins, settings).
 
 The easiest way to get a different family is a different **harness**: implementer on Claude
 Code, reviewer on Codex, or the other way round. Pi can serve either side.
@@ -1826,9 +1908,6 @@ Code, reviewer on Codex, or the other way round. Pi can serve either side.
    `agy` also offers Claude models. Don't pick one for the reviewer when the implementer is Claude.
 3. Optional: `--json-schema` can force a structured verdict, but keep the `VERDICT:` first line
    so `run-task` stays neutral.
-
-If the verdict is `changes-needed`, the findings become a new fix brief for the implementer,
-followed by verify and review again. Allow at most 2 rounds, then escalate to you.
 
 **Try it:** run 3 tasks with the reviewer on the same family as the implementer, then 3 with a
 different family. Compare the findings.

@@ -163,9 +163,15 @@ sequenceDiagram
     end
     Run->>Ver: run verify
     Ver-->>Run: green
-    Run->>WT: git commit on factory/<id>
-    Run->>Rev: task file + diff
+    Run->>WT: git commit on factory/<id> (without REPORT.md)
+    Run->>Rev: task file + diff + REPORT.md
     Rev-->>Run: VERDICT: approve / changes-needed
+    loop changes-needed: up to 2 rounds
+      Run->>Impl: the reviewer's findings
+      Run->>Ver: run verify (with fix rounds)
+      Run->>WT: git commit
+      Run->>Rev: the whole diff again
+    end
   end
   Run-->>Orch: runs/<run>/<id>/: status, verdict, REPORT.md
   Orch->>Orch: bin/collect, triage: answer questions, rewrite tasks, re-queue failures
@@ -199,7 +205,9 @@ flowchart TD
   V2 -- green --> C
   V2 -- red --> R(["status: red<br/>orchestrator triages"])
   C --> RV["reviewer: diff vs acceptance criteria<br/>(sandbox, read-only tools)"]
-  RV --> D(["status: green + verdict<br/>ready for you"])
+  RV -- approve --> D(["green + approve<br/>ready for you"])
+  RV -- "changes-needed, round 1-2" --> RF["implementer: fix the findings"] --> V
+  RV -- "changes-needed, round 3" --> D2(["green + changes-needed<br/>you decide"])
 ```
 
 Every box that says *sandbox* is a separate, fresh container. Nothing carries over between them
@@ -213,7 +221,7 @@ except what's in the worktree and the run directory.
 |---|---|---|
 | Spec, task files | product: `docs/specs/` | yes, on `main` |
 | Code changes, `REPORT.md` | worktree, branch `factory/<id>` | merged by you, or dropped |
-| Briefs, `calls.log`, `verify.log`, `status`, `diff.patch`, review | factory: `runs/<run>/<id>/` | gitignored, local history |
+| Briefs, `calls.log`, `verify.log`, `status`, `verdict`, `diff.patch`, `review-<n>.md`, a copy of `REPORT.md` | factory: `runs/<run>/<id>/` | gitignored, local history |
 | Approved dependency changes | product: build files and lockfiles, plus `docs/specs/NNN-name/dependencies.md` | yes, on `main` |
 | Failures and their fixes | factory: `docs/factory-log.md` | yes, drives factory improvements |
 | Product knowledge learned | product: `AGENTS.md` | yes |

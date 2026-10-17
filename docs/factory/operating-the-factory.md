@@ -16,7 +16,7 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 | Run one command in a sandbox (debugging) | `bin/sandbox [--net none] <worktree> <rundir> -- <command>` | ✓ |
 | Check a product against the contract | `bin/check-product [--run] <product-dir>` | not built yet (Module 1) |
 | Run one role on any harness | `bin/agent-run <role> <workdir> <prompt-file> <run-dir>` | ✓ |
-| Implement one task, gated by verify | `bin/run-task <worktree> <task-file> <run-dir>` | ✓ (review step: Module 5) |
+| Implement one task, gated by verify | `bin/run-task <worktree> <task-file> <run-dir>` | ✓ |
 | Run a batch of tasks in parallel | `bin/fan-out` | not built yet (Module 6) |
 | Collect a run's results | `bin/collect` | not built yet (Module 6) |
 | Measure the factory | `bin/eval` | not built yet (Module 8) |

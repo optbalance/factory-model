@@ -13,7 +13,8 @@ where the two disagree.
 - When you stop, the factory runs `scripts/verify` in a fresh sandbox with no network. Only that
   result counts: the task is done when verify exits 0, not when you say it is. If verify fails,
   you may be called again with its output.
-- The factory commits your changes and a separate reviewer checks the diff against the task.
+- The factory commits your changes and a separate reviewer checks the diff against the task. If
+  it finds problems, you get its findings to fix, and verify and review run again.
 
 ## How to work
 

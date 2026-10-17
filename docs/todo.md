@@ -56,5 +56,13 @@ when it's fixed.
   `$rundir/claude/implementer`, the fix prompt lacks what the model needs, or escalation never
   triggers, and a task that could be fixed ends `red`. Test it when the first real task goes red,
   or with a task the existing tests contradict; expect `calls.log` to show three `implementer`
-  calls and one `implementer-strong`. Note that an implementer that correctly refuses and changes
-  nothing still ends `green` until the Module 5 reviewer exists.
+  calls and one `implementer-strong`. A run that changes nothing ends `green` with
+  verdict `changes-needed` (the reviewer sees an empty diff).
+- **The reviewer is the same model family as the implementer.** Module 5's design
+  (`docs/how-to/building-the-factory.md`) wants a second family to check every green branch, but
+  only Claude Code is set up, so `config/routing.json` routes `reviewer` to Opus reviewing Sonnet's
+  work. Models of one family share blind spots, so the reviewer misses more of the implementer's
+  mistakes, and Module 5's "Try it" (3 tasks reviewed by the same family, 3 by a different one,
+  compare the findings) can only be half done. Fix: when a second harness or provider is
+  available (see the provider-switch bullet above), route `reviewer` to it, rerun the comparison
+  and keep the family that finds more real issues.
