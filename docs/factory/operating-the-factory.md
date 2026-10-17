@@ -17,8 +17,8 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 | Check a product against the contract | `bin/check-product [--run] <product-dir>` | not built yet (Module 1) |
 | Run one role on any harness | `bin/agent-run <role> <workdir> <prompt-file> <run-dir>` | ✓ |
 | Implement one task, gated by verify | `bin/run-task <worktree> <task-file> <run-dir>` | ✓ |
-| Run a batch of tasks in parallel | `bin/fan-out` | not built yet (Module 6) |
-| Collect a run's results | `bin/collect` | not built yet (Module 6) |
+| Run a batch of tasks in parallel | `bin/fan-out <product-dir> <task-file>...` | ✓ |
+| Collect a run's results | `bin/collect [run-dir]` | ✓ |
 | Measure the factory | `bin/eval` | not built yet (Module 8) |
 
 Commands marked "not built yet" are specified in `docs/how-to/building-the-factory.md`, in the module
@@ -78,7 +78,23 @@ Tasks never change dependencies. When a spec needs one:
 2. You approve it and commit the change (build files, lockfiles) on the product's `main`.
 3. Rebuild the worker image (step 3), then run the tasks.
 
-## 5. After a task is merged
+## 5. Run a batch of tasks
+
+Pick tasks whose `touches` don't overlap and that don't depend on each other (or whose
+`depends_on` are merged). Their task files must be committed on the product's `main`.
+
+```bash
+bin/start bin/fan-out ~/projects/<product> docs/specs/NNN-name/tasks/<id>.md ...
+bin/collect                  # the newest run; or bin/collect runs/<timestamp>
+```
+
+`fan-out` creates `~/projects/<product>-wt/<id>` on branch `factory/<id>` for each task, runs
+them in parallel and writes to `runs/<timestamp>/<id>/`. `collect` shows per task what to do
+next: merge a green, approved branch; read `review-<n>.md` when the reviewer still has
+findings; read `verify.log` and `REPORT.md` for a red one. To re-run a task, remove its worktree
+and branch (step 6) first.
+
+## 6. After a task is merged
 
 ```bash
 git -C ~/projects/<product> worktree remove ~/projects/<product>-wt/<id>
@@ -87,7 +103,7 @@ git -C ~/projects/<product> branch -d factory/<id>
 
 Run logs stay in `runs/` (gitignored); delete old ones when you no longer need them.
 
-## 6. Maintain the factory
+## 7. Maintain the factory
 
 | When | Command |
 |---|---|

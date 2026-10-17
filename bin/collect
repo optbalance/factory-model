@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# usage: collect [run-dir]   (default: the newest fan-out run in runs/)
+# Prints, for each task of a run: status, review verdict, what to do next, the models used,
+# the diff stat, and the "Not done" and "Open questions" sections of REPORT.md.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+if [ $# -ge 1 ]; then RUN=$1
+else
+  RUN=$(ls -d "$FACTORY_HOME"/runs/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]/ 2>/dev/null | tail -1)
+  [ -n "$RUN" ] || { echo "collect: no fan-out run in $FACTORY_HOME/runs" >&2; exit 2; }
+fi
+RUN=${RUN%/}; [ -d "$RUN" ] || { echo "collect: $RUN is not a directory" >&2; exit 2; }
+
+# section <file> <heading>: the markdown section whose heading starts with <heading>, indented
+section() {
+  awk -v want="$(tr '[:upper:]' '[:lower:]' <<<"$2")" '
+    /^#+[[:space:]]/ { h = tolower($0); sub(/^#+[[:space:]]*/, "", h); on = (index(h, want) == 1) }
+    on' "$1" | sed 's/^/  /'
+}
+
+echo "Run: $RUN"
+for d in "$RUN"/*/; do
+  d=${d%/}; id=$(basename "$d")
+  [ -f "$d/brief.md" ] || [ -f "$d/worktree" ] || continue
+  status=$(cat "$d/status" 2>/dev/null || echo running); verdict=$(cat "$d/verdict" 2>/dev/null || echo none)
+  last_review=$(ls "$d"/review-*.md 2>/dev/null | sort -V | tail -1 || true)
+  case "$status/$verdict" in
+    green/approve)        next="ready to merge: factory/$id" ;;
+    green/changes-needed) next="reviewer still has findings after the last round: ${last_review:-no review file}" ;;
+    green/*)              next="the review failed: see $d/run-task.log" ;;
+    red/*)                next="verify failed: $d/verify.log" ;;
+    *)                    next="no result yet (still running, or killed): $d/run-task.log" ;;
+  esac
+  [ -f "$d/head.log" ] && next="$next; $(cat "$d/head.log")"
+
+  echo; echo "== $id: $status / $verdict"
+  echo "next:   $next"
+  [ -f "$d/calls.log" ] && echo "models: $(awk '{print $2 " " $3}' "$d/calls.log" | sort | uniq -c \
+                                          | awk '{printf "%s%s %s x%s", sep, $2, $3, $1; sep=", "}')"
+  wt=$(cat "$d/worktree" 2>/dev/null || true)
+  if [ -s "$d/diff.patch" ]; then
+    echo "diff (committed):"; git apply --stat "$d/diff.patch" | sed 's/^/  /'
+  elif [ -f "$d/diff.patch" ]; then
+    echo "diff:   empty"
+  elif [ -n "$wt" ] && [ -d "$wt" ]; then
+    changes=$(git -C "$wt" status --short)
+    if [ -n "$changes" ]; then echo "diff (uncommitted, in $wt):"; sed 's/^/  /' <<<"$changes"
+    else echo "diff:   none"; fi
+  fi
+  report="$d/REPORT.md"; [ -f "$report" ] || report="$wt/REPORT.md"
+  if [ -f "$report" ]; then
+    section "$report" "Not done"; section "$report" "Open questions"
+    echo "report: $report"
+  else
+    echo "report: none"
+  fi
+done

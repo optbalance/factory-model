@@ -221,7 +221,7 @@ except what's in the worktree and the run directory.
 |---|---|---|
 | Spec, task files | product: `docs/specs/` | yes, on `main` |
 | Code changes, `REPORT.md` | worktree, branch `factory/<id>` | merged by you, or dropped |
-| Briefs, `calls.log`, `verify.log`, `status`, `verdict`, `diff.patch`, `review-<n>.md`, a copy of `REPORT.md` | factory: `runs/<run>/<id>/` | gitignored, local history |
+| Briefs, `calls.log`, `verify.log`, `status`, `verdict`, `diff.patch`, `review-<n>.md`, a copy of `REPORT.md`; from `fan-out`: `run-task.log`, `worktree`, and `build-worker.log` per run | factory: `runs/<run>/<id>/` | gitignored, local history |
 | Approved dependency changes | product: build files and lockfiles, plus `docs/specs/NNN-name/dependencies.md` | yes, on `main` |
 | Failures and their fixes | factory: `docs/factory-log.md` | yes, drives factory improvements |
 | Product knowledge learned | product: `AGENTS.md` | yes |

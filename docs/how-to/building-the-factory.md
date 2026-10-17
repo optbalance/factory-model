@@ -1927,21 +1927,45 @@ status and a review verdict. **You read reports, not transcripts.**
 ```bash
 #!/usr/bin/env bash
 # usage: fan-out <product-dir> <task-file>...   (task paths relative to the product root, committed on main)
+# Runs the tasks in parallel, each in its own worktree <product-dir>-wt/<id> on branch factory/<id>.
+# Results go to runs/<timestamp>/<id>; read them with bin/collect.
 set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+[ $# -ge 2 ] || { echo "usage: fan-out <product-dir> <task-file>..." >&2; exit 2; }
 PRODUCT="$(cd "$1" && pwd)"; shift
-RUN="$FACTORY_HOME/runs/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$RUN"
-case "${SANDBOX:-docker}" in                     # keep the worker image in step with main
-  podman|docker) "$FACTORY_HOME/bin/build-worker" "$PRODUCT" > "$RUN/build-worker.log" 2>&1 \
-                   || { echo "build-worker failed, see $RUN/build-worker.log" >&2; exit 1; } ;;
-esac
+
+# Check every task before starting any, so a bad one doesn't leave half a batch running.
+declare -A seen; bad=0
 for task in "$@"; do
   id=$(basename "$task" .md); wt="${PRODUCT}-wt/$id"
-  git -C "$PRODUCT" worktree add -q -b "factory/$id" "$wt" main
-  "$FACTORY_HOME/bin/run-task" "$wt" "$task" "$RUN/$id" &
+  err=""
+  if ! git -C "$PRODUCT" cat-file -e "main:$task" 2>/dev/null; then err="not committed on main"
+  elif [ -n "${seen[$id]:-}" ]; then err="id $id is used twice in this batch"
+  elif git -C "$PRODUCT" show-ref --verify -q "refs/heads/factory/$id"; then err="branch factory/$id exists (merge or delete it first)"
+  elif [ -e "$wt" ]; then err="$wt exists (git worktree remove it first)"
+  fi
+  [ -z "$err" ] || { echo "fan-out: $task: $err" >&2; bad=1; }
+  seen[$id]=1
+done
+[ $bad = 0 ] || exit 2
+
+mkdir -p "$FACTORY_HOME/runs"
+RUN="$FACTORY_HOME/runs/$(date +%Y%m%d-%H%M%S)"; mkdir "$RUN"
+case "${SANDBOX:-docker}" in                     # keep the worker image in step with main
+  podman|docker) "$FACTORY_HOME/bin/build-worker" "$PRODUCT" > "$RUN/build-worker.log" 2>&1 \
+                   || { echo "fan-out: build-worker failed, see $RUN/build-worker.log" >&2; exit 1; } ;;
+esac
+for task in "$@"; do
+  id=$(basename "$task" .md); wt="${PRODUCT}-wt/$id"; mkdir "$RUN/$id"
+  git -C "$PRODUCT" worktree add -q -b "factory/$id" "$wt" main \
+    || { echo "fan-out: $task: creating the worktree failed, skipped" >&2; continue; }
+  echo "$wt" > "$RUN/$id/worktree"               # for bin/collect
+  "$FACTORY_HOME/bin/run-task" "$wt" "$task" "$RUN/$id" > "$RUN/$id/run-task.log" 2>&1 &
+  echo "fan-out: started $id"
 done
 wait
 echo "Run complete: $RUN"
+echo "Results: $FACTORY_HOME/bin/collect $RUN"
 ```
 
 `run-task` itself stays on the host. Every agent call and every verify run inside it goes
@@ -1949,8 +1973,79 @@ through `bin/sandbox`, so each worktree gets its own isolated sandbox. Task file
 committed on `main` before fan-out, so each worktree contains its own copy. That copy is the
 path the agent is given, because it's the only one mounted in the sandbox.
 
+`fan-out` checks the whole batch before it starts anything: every task file is committed on
+`main`, no id appears twice, and no branch `factory/<id>` or worktree for it is left over from an
+earlier run. A re-queued task needs its old worktree removed and its branch deleted first (or a
+rewritten task file under a new id). Each `run-task`'s output goes to `<id>/run-task.log`, so
+parallel tasks don't interleave on your terminal, and `<id>/worktree` records where the work is.
+
 **Build** `bin/collect`: for each task in a run, print the id, the status (`green` or `red`),
-the review verdict, the `REPORT.md` summary and open questions, the diff stat, and the models used (from `calls.log`). This is your dashboard.
+the review verdict, what to do next, the models used (from `calls.log`), the diff stat, and the
+"Not done" and "Open questions" sections of `REPORT.md`. This is your dashboard.
+
+```bash
+#!/usr/bin/env bash
+# usage: collect [run-dir]   (default: the newest fan-out run in runs/)
+# Prints, for each task of a run: status, review verdict, what to do next, the models used,
+# the diff stat, and the "Not done" and "Open questions" sections of REPORT.md.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+if [ $# -ge 1 ]; then RUN=$1
+else
+  RUN=$(ls -d "$FACTORY_HOME"/runs/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]/ 2>/dev/null | tail -1)
+  [ -n "$RUN" ] || { echo "collect: no fan-out run in $FACTORY_HOME/runs" >&2; exit 2; }
+fi
+RUN=${RUN%/}; [ -d "$RUN" ] || { echo "collect: $RUN is not a directory" >&2; exit 2; }
+
+# section <file> <heading>: the markdown section whose heading starts with <heading>, indented
+section() {
+  awk -v want="$(tr '[:upper:]' '[:lower:]' <<<"$2")" '
+    /^#+[[:space:]]/ { h = tolower($0); sub(/^#+[[:space:]]*/, "", h); on = (index(h, want) == 1) }
+    on' "$1" | sed 's/^/  /'
+}
+
+echo "Run: $RUN"
+for d in "$RUN"/*/; do
+  d=${d%/}; id=$(basename "$d")
+  [ -f "$d/brief.md" ] || [ -f "$d/worktree" ] || continue
+  status=$(cat "$d/status" 2>/dev/null || echo running); verdict=$(cat "$d/verdict" 2>/dev/null || echo none)
+  last_review=$(ls "$d"/review-*.md 2>/dev/null | sort -V | tail -1 || true)
+  case "$status/$verdict" in
+    green/approve)        next="ready to merge: factory/$id" ;;
+    green/changes-needed) next="reviewer still has findings after the last round: ${last_review:-no review file}" ;;
+    green/*)              next="the review failed: see $d/run-task.log" ;;
+    red/*)                next="verify failed: $d/verify.log" ;;
+    *)                    next="no result yet (still running, or killed): $d/run-task.log" ;;
+  esac
+  [ -f "$d/head.log" ] && next="$next; $(cat "$d/head.log")"
+
+  echo; echo "== $id: $status / $verdict"
+  echo "next:   $next"
+  [ -f "$d/calls.log" ] && echo "models: $(awk '{print $2 " " $3}' "$d/calls.log" | sort | uniq -c \
+                                          | awk '{printf "%s%s %s x%s", sep, $2, $3, $1; sep=", "}')"
+  wt=$(cat "$d/worktree" 2>/dev/null || true)
+  if [ -s "$d/diff.patch" ]; then
+    echo "diff (committed):"; git apply --stat "$d/diff.patch" | sed 's/^/  /'
+  elif [ -f "$d/diff.patch" ]; then
+    echo "diff:   empty"
+  elif [ -n "$wt" ] && [ -d "$wt" ]; then
+    changes=$(git -C "$wt" status --short)
+    if [ -n "$changes" ]; then echo "diff (uncommitted, in $wt):"; sed 's/^/  /' <<<"$changes"
+    else echo "diff:   none"; fi
+  fi
+  report="$d/REPORT.md"; [ -f "$report" ] || report="$wt/REPORT.md"
+  if [ -f "$report" ]; then
+    section "$report" "Not done"; section "$report" "Open questions"
+    echo "report: $report"
+  else
+    echo "report: none"
+  fi
+done
+```
+
+The diff stat comes from `diff.patch` when the work was committed (green), and from the
+worktree's uncommitted changes otherwise (red). `collect` reads only files `run-task` writes for
+every harness, so it stays harness-agnostic.
 
 Rules:
 - Only run tasks together if their `touches` don't overlap and they don't depend on each other.
@@ -1969,8 +2064,10 @@ sessions. What differs is how much parallelism your account can take.
 
 1. With `CLAUDE_CODE_OAUTH_TOKEN`, all workers share one subscription quota. Parallel workers use
    it up quickly, so keep batches small, or route bulk roles to the API key.
-2. `bin/collect` can read each worker's cost from the `result` event at the end of
-   `implementer.events.jsonl` (`total_cost_usd`).
+2. Each worker's cost is in the `result` event at the end of `<role>.events.jsonl`
+   (`total_cost_usd`). `bin/collect` doesn't read it: that file's format is Claude Code's, and
+   code outside `adapters/` must not depend on it. Read it by hand until Module 8's `bin/metrics`,
+   whose per-harness parsers turn these files into neutral rows.
 
 **Codex:**
 

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# usage: fan-out <product-dir> <task-file>...   (task paths relative to the product root, committed on main)
+# Runs the tasks in parallel, each in its own worktree <product-dir>-wt/<id> on branch factory/<id>.
+# Results go to runs/<timestamp>/<id>; read them with bin/collect.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+[ $# -ge 2 ] || { echo "usage: fan-out <product-dir> <task-file>..." >&2; exit 2; }
+PRODUCT="$(cd "$1" && pwd)"; shift
+
+# Check every task before starting any, so a bad one doesn't leave half a batch running.
+declare -A seen; bad=0
+for task in "$@"; do
+  id=$(basename "$task" .md); wt="${PRODUCT}-wt/$id"
+  err=""
+  if ! git -C "$PRODUCT" cat-file -e "main:$task" 2>/dev/null; then err="not committed on main"
+  elif [ -n "${seen[$id]:-}" ]; then err="id $id is used twice in this batch"
+  elif git -C "$PRODUCT" show-ref --verify -q "refs/heads/factory/$id"; then err="branch factory/$id exists (merge or delete it first)"
+  elif [ -e "$wt" ]; then err="$wt exists (git worktree remove it first)"
+  fi
+  [ -z "$err" ] || { echo "fan-out: $task: $err" >&2; bad=1; }
+  seen[$id]=1
+done
+[ $bad = 0 ] || exit 2
+
+mkdir -p "$FACTORY_HOME/runs"
+RUN="$FACTORY_HOME/runs/$(date +%Y%m%d-%H%M%S)"; mkdir "$RUN"
+case "${SANDBOX:-docker}" in                     # keep the worker image in step with main
+  podman|docker) "$FACTORY_HOME/bin/build-worker" "$PRODUCT" > "$RUN/build-worker.log" 2>&1 \
+                   || { echo "fan-out: build-worker failed, see $RUN/build-worker.log" >&2; exit 1; } ;;
+esac
+for task in "$@"; do
+  id=$(basename "$task" .md); wt="${PRODUCT}-wt/$id"; mkdir "$RUN/$id"
+  git -C "$PRODUCT" worktree add -q -b "factory/$id" "$wt" main \
+    || { echo "fan-out: $task: creating the worktree failed, skipped" >&2; continue; }
+  echo "$wt" > "$RUN/$id/worktree"               # for bin/collect
+  "$FACTORY_HOME/bin/run-task" "$wt" "$task" "$RUN/$id" > "$RUN/$id/run-task.log" 2>&1 &
+  echo "fan-out: started $id"
+done
+wait
+echo "Run complete: $RUN"
+echo "Results: $FACTORY_HOME/bin/collect $RUN"
