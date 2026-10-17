@@ -2132,6 +2132,10 @@ approvals and your guards are what protect you here.
 2. Allow the factory scripts once, so it doesn't stop at every batch: add
    `Bash(~/factory-model/bin/*)` to the allow list in your user settings. Leave everything else
    on the default mode, which asks first.
+3. Claude Code stops a foreground shell command after at most 10 minutes, and a batch runs
+   longer. The skill tells it to run `bin/fan-out` in the background; Claude Code then tells the
+   session when it ends. If it runs it in the foreground anyway, ask it to rerun in the
+   background (remove the half-made worktrees and branches first).
 
 **Codex:**
 
@@ -2176,7 +2180,11 @@ Classify every failure and fix it in **the matching layer**:
 | A harness ignored a guard, flag or config | that harness's adapter (`adapters/<name>/`) |
 
 `skills/retro/`: reads recent `runs/`, reports and the factory log, then proposes concrete
-factory changes. You approve them.
+factory changes. You approve them. Run it in the factory repo (Claude Code:
+`claude-factory --model opus` in `~/factory-model`, then `/factory:retro`).
+
+The orchestrator appends to the log, with `fix: pending`; retro fills in the fix. The log's
+header in `docs/factory-log.md` defines the line format both skills use.
 
 **Done when:** you give it a spec, get back reviewed merge-ready branches, and your only work
 is answering questions and merging. You've also made at least 3 factory improvements from the
