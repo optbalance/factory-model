@@ -16,8 +16,9 @@ for Pi, Claude Code, Codex and Antigravity are in `docs/how-to/building-the-fact
 | 3 | Guard wiring | hook, extension or plugin under `adapters/<harness>/` |
 | 4 | Skills | the same, pointing at `skills/` |
 | 5 | The runner: `run.sh` | `adapters/<harness>/run.sh` |
-| 6 | Routing keys | entries in `config/routing.json` |
-| 7 | Check | — |
+| 6 | Usage: `metrics.sh` | `adapters/<harness>/metrics.sh` |
+| 7 | Routing keys | entries in `config/routing.json` |
+| 8 | Check | — |
 
 The adapter is only a translator. It never decides policy: what is blocked comes from `guards/`,
 what each role does from `roles/` and `config/routing.json`, what the product is from its
@@ -115,8 +116,10 @@ It must:
 3. **Keep sessions under `$rundir`, one per role**, and continue that role's last session when
    `CONTINUE` is set.
 4. **Write the output where the runner reads it.** `output: text`: only the agent's final answer
-   in `$rundir/$role.out.md` (a reviewer's first line is its `VERDICT:`). `output: events`: append
-   the harness's event stream to `$rundir/$role.events.jsonl`. Other logs go to
+   in `$rundir/$role.out.md` (a reviewer's first line is its `VERDICT:`), and the harness's
+   machine-readable result, if it has one, appended to `$rundir/$role.events.jsonl` so the call's
+   usage is counted (Step 6). `output: events`: append the harness's event stream to
+   `$rundir/$role.events.jsonl`. Other logs go to
    `$rundir/$role.*.log`, never to the worktree.
 5. **Exit non-zero when the harness failed** (no response, auth error, timeout). The runner
    treats it as a failed attempt, not as a verdict. If the harness exits `0` on failure, detect
@@ -130,7 +133,34 @@ only because each `run.sh` honors the same interface. Point 2 is security as wel
 reproducibility: config an agent writes into the worktree would otherwise apply to the next run
 in it (the fix round, the reviewer), and could switch off the guards.
 
-## Step 6. Routing keys
+## Step 6. Usage: `metrics.sh`
+
+**What:** an executable `adapters/<harness>/metrics.sh <events-file>` that reads a
+`$role.events.jsonl` and prints one tab-separated row per call, in call order:
+
+```
+turns  duration_s  tokens_in  tokens_out  tokens_cached  cost_usd  error
+```
+
+| Column | What it is |
+|---|---|
+| `turns` | the agent's turns in this call |
+| `duration_s` | wall time of the call, whole seconds |
+| `tokens_in` | input tokens not read from cache (cache writes included) |
+| `tokens_out` | output tokens, thinking included |
+| `tokens_cached` | input tokens read from cache |
+| `cost_usd` | the call's cost; from a price table in `config/` if the harness reports only tokens |
+| `error` | `1` if the harness reported the call as failed, else `0` |
+
+Every number is for **this call only**. If the harness reports running totals for a continued
+session, subtract the previous call's. Skip lines that aren't valid JSON. Print nothing for a
+call that left no result; `bin/metrics` counts it as having no data.
+
+**Why:** `bin/metrics` (and through it `bin/collect`, the `retro` skill and later the evals)
+works with every harness only because each parser prints the same row. The event formats differ;
+the parsers are the only code that knows them.
+
+## Step 7. Routing keys
 
 **What:** document the keys the adapter reads from a routing entry, with defaults:
 
@@ -147,7 +177,7 @@ deny list or the harness's own sandbox mode. Never by asking in the prompt.
 **Why:** `config/routing.json` is the only place a role's harness and model are chosen, so
 switching a role to another harness means editing one entry.
 
-## Step 7. Check
+## Step 8. Check
 
 Before routing a real role to the adapter, check inside the sandbox, on each backend you use:
 
@@ -168,6 +198,8 @@ Before routing a real role to the adapter, check inside the sandbox, on each bac
    `git -C <wt> status --porcelain` stays empty.
 7. **Output and exit:** `output: text` writes only the final answer to `$role.out.md`; an unknown
    model makes `run.sh` exit non-zero.
+8. **Usage:** after checks 5–7, `adapters/<harness>/metrics.sh $rd/<role>.events.jsonl` prints one
+   row per call, with turns and cost that match the harness's own report.
 
 Then route one cheap role to it (`docs/factory/operating-the-factory.md`) and update the
 harness table in `docs/factory/factory-contract.md`, Step 5.

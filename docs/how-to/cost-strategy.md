@@ -104,7 +104,7 @@ Compare **cost per completed task**, not cost per request. Set effort once per r
 | Implementer-strong | high |
 | Scout, triage | low |
 
-These are starting points; confirm them with evals (Module 8). Defaults differ by model, and other
+These are starting points; confirm them with evals (Module 9). Defaults differ by model, and other
 providers use other names (reasoning effort, thinking level). Don't confuse effort with **fast
 mode**, which is the one option that does change the price per token (2× on Opus 5.5) and buys
 speed, not depth.
@@ -131,7 +131,7 @@ It doesn't work for agent loops: each turn depends on the previous result, so ev
 in the queue. Use it for single-shot work:
 
 - reviewing finished diffs overnight
-- grading evals (Module 8)
+- grading evals (Module 9)
 - triaging verify logs and summarizing runs
 
 ---
@@ -189,7 +189,7 @@ Why it loses:
 | Local | None | — |
 
 Rough target: **$150–300 a month with a hard ceiling**, versus an open-ended $400–900. Confirm with
-your own evals (Module 8): whether the coding-plan models pass verify often enough is an empirical
+your own evals (Module 9): whether the coding-plan models pass verify often enough is an empirical
 question. Keep an API fallback configured in `config/routing.json`, because coding-plan quotas and
 terms change without much notice.
 

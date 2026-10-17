@@ -20,7 +20,10 @@ args=(-p --model "$model" --effort "$effort" --tools "$tools"
 
 cd "$workdir"
 if [ "$output" = text ]; then
-  claude "${args[@]}" < "$prompt" > "$rundir/$role.out.md"
+  # json, not text: the final answer goes to $role.out.md, the result (usage, cost) to the events log
+  claude "${args[@]}" --output-format json < "$prompt" > "$rundir/$role.result.json"
+  jq -c . "$rundir/$role.result.json" >> "$rundir/$role.events.jsonl"
+  jq -r '.result // empty' "$rundir/$role.result.json" > "$rundir/$role.out.md"
 else
   claude "${args[@]}" --output-format stream-json --verbose < "$prompt" >> "$rundir/$role.events.jsonl"
 fi

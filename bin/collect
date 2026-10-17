@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # usage: collect [run-dir]   (default: the newest fan-out run in runs/)
-# Prints, for each task of a run: status, review verdict, what to do next, the models used,
-# the diff stat, and the "Not done" and "Open questions" sections of REPORT.md.
+# Prints, for each task of a run: status, review verdict, what to do next, the models used, usage
+# (bin/metrics), the diff stat, and the "Not done" and "Open questions" sections of REPORT.md.
 set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
 if [ $# -ge 1 ]; then RUN=$1
@@ -37,6 +37,9 @@ for d in "$RUN"/*/; do
   echo "next:   $next"
   [ -f "$d/calls.log" ] && echo "models: $(awk '{print $2 " " $3}' "$d/calls.log" | sort | uniq -c \
                                           | awk '{printf "%s%s %s x%s", sep, $2, $3, $1; sep=", "}')"
+  usage=$("$FACTORY_HOME/bin/metrics" --tsv "$d" | LC_ALL=C awk -F'\t' '$6 != "" { t += $6; s += $7; c += $11; n++ }
+           END { if (n) printf "%d turns, %dm%02ds, $%.2f (list-price estimate)", t, s / 60, s % 60, c }')
+  [ -n "$usage" ] && echo "usage:  $usage"
   wt=$(cat "$d/worktree" 2>/dev/null || true)
   if [ -s "$d/diff.patch" ]; then
     echo "diff (committed):"; git apply --stat "$d/diff.patch" | sed 's/^/  /'

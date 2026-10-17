@@ -36,7 +36,7 @@ when it's fixed.
   no `roles/planner.md` and nothing calls `agent-run planner` (the `planner` entry in
   `config/routing.json` only records the model for interactive planning sessions). What could go
   wrong: a cheap implementer may fail on approach (design) even with a good task file, burning fix
-  rounds. Add the step only if Module 8 evals show that, and after trying more concrete task files
+  rounds. Add the step only if Module 9 evals show that, and after trying more concrete task files
   first. Possible fix: `run-task` calls `agent-run planner` (read-only tools) before the
   implementer, the planner writes `$rundir/approach.md`, and `run-task` appends it to `brief.md`;
   then write `roles/planner.md`. Cost: one strong-model call per task.
@@ -57,7 +57,9 @@ when it's fixed.
   triggers, and a task that could be fixed ends `red`. Test it when the first real task goes red,
   or with a task the existing tests contradict; expect `calls.log` to show three `implementer`
   calls and one `implementer-strong`. A run that changes nothing ends `green` with
-  verdict `changes-needed` (the reviewer sees an empty diff).
+  verdict `changes-needed` (the reviewer sees an empty diff). The same run tests `adapters/claude/metrics.sh` on a
+  continued session (`docs/how-to/building-the-factory.md`, Module 8, Claude step 2): whether
+  `num_turns` and `duration_ms` accumulate like cost does.
 - **The reviewer is the same model family as the implementer.** Module 5's design
   (`docs/how-to/building-the-factory.md`) wants a second family to check every green branch, but
   only Claude Code is set up, so `config/routing.json` routes `reviewer` to Opus reviewing Sonnet's

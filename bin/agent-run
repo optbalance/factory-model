@@ -14,6 +14,6 @@ mkdir -p "$rundir"
 { git -C "$workdir" show main:AGENTS.md \
     || { echo "agent-run: AGENTS.md is not committed on main (product contract, Step 2)" >&2; exit 1; }
   echo; cat "$FACTORY_HOME/roles/$role.md"; } > "$rundir/$role.system.md"
-echo "$(date -Is) $role $(jq -r .model <<<"$cfg") sandbox=${SANDBOX:-docker}" >> "$rundir/calls.log"
+echo "$(date -Is) $role $(jq -r .model <<<"$cfg") sandbox=${SANDBOX:-docker} harness=$harness" >> "$rundir/calls.log"
 exec "$FACTORY_HOME/bin/sandbox" "$workdir" "$rundir" -- \
      "$FACTORY_HOME/adapters/$harness/run.sh" "$cfg" "$role" "$workdir" "$prompt" "$rundir"

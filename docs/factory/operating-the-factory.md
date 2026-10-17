@@ -21,7 +21,8 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 | Collect a run's results | `bin/collect [run-dir]` | ✓ |
 | Run a spec's tasks to merge-ready branches | skill `orchestrate`, in a session started with `bin/start` in the product repo | ✓ |
 | Turn failures into factory fixes | skill `retro`, in a session started with `bin/start` in `~/factory-model` | ✓ |
-| Measure the factory | `bin/eval` | not built yet (Module 8) |
+| Measure runs: cost, turns, fix rounds | `bin/metrics [--tsv] [dir...]` | ✓ |
+| Measure the factory with evals | `bin/eval` | postponed (Module 9) |
 
 Commands marked "not built yet" are specified in `docs/how-to/building-the-factory.md`, in the module
 shown. Update this table as each one lands.

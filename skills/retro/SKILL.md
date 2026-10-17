@@ -21,10 +21,19 @@ a fix may go.
 - The task files and specs of those runs, in the product repo (a task's run dir is named after
   its id; `worktree` in it shows the product's path).
 - `docs/todo.md`: issues already known and postponed.
+- `bin/metrics runs/<run> ...` over the same runs: per task, its fix rounds, escalation,
+  review rounds that asked for changes, turns, time and cost, with the most turns first.
 
 Also look for failures nobody logged: approved branches whose reviews name real gaps, fix rounds
 in `calls.log` (more than one `implementer` call), escalations (`implementer-strong`), and the
 same open question in several reports. Add a log line for each.
+
+Use the metrics to find outliers among tasks that went well too: many more turns, fix rounds or
+cost than the others. Read their task files and look for what they share: a part of the code, a
+kind of work (concurrency, parsing, migrations), a missing piece of context. Shared traits are a
+pattern, such as "tasks touching concurrency take twice the turns: the task files don't say which
+locking pattern to follow". With few tasks, a pattern is a guess: give the numbers, and propose a
+fix only when it's cheap or the pattern repeats.
 
 ## 2. Find the causes
 

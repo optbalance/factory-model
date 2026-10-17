@@ -66,7 +66,7 @@ The factory and the product are **two separate repos** with a clear contract bet
 
 | | `factory-model` (this repo) | `<product>` (your project) |
 |---|---|---|
-| Holds | *How* work gets done: skills, roles, guards, routing, runner scripts, adapters, run logs, evals | *What* is being built: code, tests, product docs, specs |
+| Holds | *How* work gets done: skills, roles, guards, routing, runner scripts, adapters, run logs | *What* is being built: code, tests, product docs, specs |
 | Knowledge | Process knowledge, the same for any project | Domain knowledge, specific to this project |
 | Git history | Changes to the factory | Changes to the product |
 
@@ -142,7 +142,6 @@ factory-model/
 │           ├── hooks.json
 │           └── guard.sh
 ├── templates/                 # task.md, product AGENTS.md, verify, toolchain.Containerfile (examples, copied by hand)
-├── evals/
 ├── runs/                      # run logs (gitignored)
 └── docs/
     ├── how-to/
@@ -1304,7 +1303,7 @@ reason the agent follows, and the fourth finds nothing because the sandbox hides
 
 Routing principles:
 - **Planner:** use the strongest reasoning model, because planning mistakes multiply.
-- **Implementer:** use the cheapest model that passes your evals (Module 8). Retry failures on
+- **Implementer:** use the cheapest model that passes your evals (Module 9). Retry failures on
   `implementer-strong`.
 - **Reviewer:** use a **different model family than the implementer**. Models from the same
   family tend to share blind spots, and cross-family review catches more.
@@ -2065,9 +2064,9 @@ sessions. What differs is how much parallelism your account can take.
 1. With `CLAUDE_CODE_OAUTH_TOKEN`, all workers share one subscription quota. Parallel workers use
    it up quickly, so keep batches small, or route bulk roles to the API key.
 2. Each worker's cost is in the `result` event at the end of `<role>.events.jsonl`
-   (`total_cost_usd`). `bin/collect` doesn't read it: that file's format is Claude Code's, and
-   code outside `adapters/` must not depend on it. Read it by hand until Module 8's `bin/metrics`,
-   whose per-harness parsers turn these files into neutral rows.
+   (`total_cost_usd`). `bin/collect` doesn't parse that file itself, because its format is
+   Claude Code's; from Module 8 on it shows a `usage:` line from `bin/metrics`, whose
+   per-harness parsers turn these files into neutral rows.
 
 **Codex:**
 
@@ -2192,19 +2191,161 @@ log.
 
 ---
 
-## Module 8: Measure the factory
+## Module 8: Metrics, where the effort goes
 
-**Goal:** routing and prompt changes are decided by numbers.
+**Goal:** every run reports what it cost and where the effort went: turns, time, tokens and
+cost per call, fix rounds, escalations and review rounds per task. The numbers come from runs you
+make anyway, so this costs nothing extra. They feed `collect` (one line per task) and the `retro`
+skill (outliers and patterns).
 
 **Build:**
-- `evals/`: 5–10 frozen tasks against a fixed product commit, each with hidden acceptance
-  tests.
-- `bin/eval [--routing config/routing.alt.json]`: runs every eval task through `run-task` and
-  scores pass or fail against the hidden tests.
-- Metrics per **role × harness × model**: pass rate, fix rounds, escalation rate, review
-  findings, cost, and wall time.
-- `bin/metrics`: one small parser per harness turns `*.events.jsonl` into the same row
-  (tokens in/out/cached, cost, turns, duration). The parsers are the only harness-specific part.
+
+1. **A parser per harness**, `adapters/<harness>/metrics.sh <events-file>` (adapter contract,
+   Step 6): one tab-separated row per call, in call order:
+   `turns duration_s tokens_in tokens_out tokens_cached cost_usd error`. The parsers are the
+   only harness-specific part. Every role must leave its usage in `$role.events.jsonl`, including
+   roles with `output: text` such as the reviewer: the adapter appends the harness's result there
+   too, not only the final answer to `$role.out.md`.
+2. **`bin/agent-run` records the harness** in each `calls.log` line (`harness=<name>`), so the
+   right parser is picked even after `config/routing.json` changes.
+3. **`bin/metrics [--tsv] [dir...]`**: matches each call in a task's `calls.log` with a row from
+   its harness's parser and prints three tables: tasks (most turns first, so outliers lead),
+   role × harness × model, and per implementer model the pass rate (green and approved), fix
+   rounds per task, escalations and cost per passed task. `--tsv` prints the raw rows for other
+   scripts. A call with no row (it failed before reporting, or it's from before metrics existed)
+   is counted under `NO DATA`, not as an error.
+4. **`bin/collect`** adds a `usage:` line per task from `bin/metrics --tsv`.
+5. **The `retro` skill** reads `bin/metrics` over the runs it reviews, and looks for what the
+   outliers share (Module 7b).
+
+The Claude Code parser:
+
+```bash
+#!/usr/bin/env bash
+# usage: metrics.sh <events-file>
+# One tab-separated row per call, in call order (adapter contract, Step 6):
+#   turns  duration_s  tokens_in  tokens_out  tokens_cached  cost_usd  error(0|1)
+# Claude Code ends every call with a `result` event. A call that continues a session reports the
+# session's totals, earlier calls included (Claude Code 2.1.277+), so a result in the same session
+# as the previous one has that one's totals subtracted. Tokens come from modelUsage, which also
+# counts subagents; tokens_in includes cache writes.
+set -euo pipefail
+jq -Rrn '
+  def tot: { cost:   (.total_cost_usd // 0),
+             in:     ([.modelUsage[]? | (.inputTokens // 0) + (.cacheCreationInputTokens // 0)] | add // 0),
+             out:    ([.modelUsage[]? | .outputTokens // 0] | add // 0),
+             cached: ([.modelUsage[]? | .cacheReadInputTokens // 0] | add // 0) };
+  reduce (inputs | fromjson? | select(.type? == "result")) as $e ({rows: [], prev: null};
+    ($e | tot) as $t
+    | (if .prev != null and .prev.sid == $e.session_id and $t.cost >= .prev.t.cost
+       then .prev.t else {cost: 0, in: 0, out: 0, cached: 0} end) as $b
+    | .rows += [[ ($e.num_turns // 0), (($e.duration_ms // 0) / 1000 | floor),
+                  ($t.in - $b.in), ($t.out - $b.out), ($t.cached - $b.cached),
+                  ($t.cost - $b.cost), (if $e.is_error then 1 else 0 end) ]]
+    | .prev = {sid: $e.session_id, t: $t})
+  | .rows[] | @tsv' "$1"
+```
+
+`bin/metrics`:
+
+```bash
+#!/usr/bin/env bash
+# usage: metrics [--tsv] [dir...]   (dirs: runs, fan-out runs or task run dirs; default: all of runs/)
+# Turns run logs into numbers. Each call in a task's calls.log is matched with a row from its
+# harness's parser (adapters/<harness>/metrics.sh), in call order. Prints:
+#   per task:  status, verdict, implementer model, calls, fix rounds, escalation, review rounds with
+#              changes-needed, turns, duration, cost; most turns first, so outliers lead
+#   per role × harness × model: calls, turns, duration, tokens, cost, and for implementers the pass
+#              rate (green and approved), fix rounds and escalation rate
+# --tsv prints one row per call instead, for other scripts:
+#   run task role harness model turns duration_s tokens_in tokens_out tokens_cached cost_usd error
+# (the last seven empty when the call recorded no usage)
+# Cost is the harness's own estimate at list price; on a subscription it is notional.
+set -euo pipefail
+export LC_ALL=C                                   # "." decimals in awk and printf, whatever the locale
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+tsv=0; [ "${1:-}" = --tsv ] && { tsv=1; shift; }
+[ $# -ge 1 ] || set -- "$FACTORY_HOME/runs"
+routing="$FACTORY_HOME/config/routing.json"
+
+# calls: one row per call of every task under the given dirs
+calls() {
+  find "$@" -maxdepth 3 -name calls.log | sort | while read -r log; do
+    d=$(dirname "$log"); task=$(basename "$d"); run=$(basename "$(dirname "$d")")
+    declare -A rows=() used=()
+    while read -r _ role model rest; do
+      h=$(sed -n 's/.*harness=\([^ ]*\).*/\1/p' <<<"$rest")
+      [ -n "$h" ] || h=$(jq -r --arg r "$role" '.roles[$r].harness // empty' "$routing")   # logs before harness= was recorded
+      if [ -z "${rows[$role]+x}" ]; then
+        p="$FACTORY_HOME/adapters/$h/metrics.sh"
+        if [ -x "$p" ] && [ -f "$d/$role.events.jsonl" ]; then rows[$role]=$("$p" "$d/$role.events.jsonl" || true)
+        else rows[$role]=""; fi
+        used[$role]=0
+      fi
+      n=$(( ${used[$role]} + 1 )); used[$role]=$n
+      r=$(sed -n "${n}p" <<<"${rows[$role]}")
+      [ -n "$r" ] || r=$(printf '\t\t\t\t\t\t')           # no usage recorded: a failed call, or a log from before metrics
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$run" "$task" "$role" "${h:-?}" "$model" "$r"
+    done < "$log"
+    unset rows used
+  done
+}
+
+if [ $tsv = 1 ]; then calls "$@"; exit 0; fi
+
+# task outcomes: run task status verdict review-rounds-with-changes-needed
+outcomes() {
+  find "$@" -maxdepth 3 -name calls.log | sort | while read -r log; do
+    d=$(dirname "$log")
+    cn=0; for f in "$d"/review-*.md; do [ -f "$f" ] && head -1 "$f" | grep -q '^VERDICT: changes-needed' && cn=$((cn + 1)); done
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$(dirname "$d")")" "$(basename "$d")" \
+      "$(cat "$d/status" 2>/dev/null || echo -)" "$(cat "$d/verdict" 2>/dev/null || echo -)" "$cn"
+  done
+}
+
+awk -F'\t' '
+  function money(x) { return sprintf("$%.2f", x) }
+  function dur(s)   { return sprintf("%dm%02ds", int(s / 60), s % 60) }
+  function tok(x)   { return x >= 1e6 ? sprintf("%.1fM", x / 1e6) : sprintf("%.0fk", x / 1e3) }
+  FNR == 1 { file++ }
+  file == 1 { k = $1 SUBSEP $2; status[k] = $3; verdict[k] = $4; cn[k] = $5; next }
+  {
+    k = $1 SUBSEP $2; if (!(k in seen)) { seen[k] = 1; order[++ntask] = k }
+    turns[k] += $6; secs[k] += $7; cost[k] += $11; ncalls[k]++
+    if ($3 ~ /^implementer/) { impl[k]++; if (!(k in imodel)) imodel[k] = $4 "/" $5 }
+    if ($3 == "implementer-strong") esc[k] = 1
+    g = $3 SUBSEP $4 SUBSEP $5; if (!(g in gseen)) { gseen[g] = 1; gorder[++ng] = g }
+    gc[g]++; if ($12 == "") gna[g]++; gt[g] += $6; gs[g] += $7; gin[g] += $8; gout[g] += $9; gcache[g] += $10; gcost[g] += $11; gerr[g] += $12
+  }
+  END {
+    printf "%-28s %-6s %-15s %-18s %5s %4s %3s %3s %6s %8s %8s\n", "TASK", "STATUS", "VERDICT", "IMPLEMENTER", "CALLS", "FIX", "ESC", "CN", "TURNS", "TIME", "COST"
+    # sort tasks by turns, most first
+    for (i = 1; i <= ntask; i++) idx[i] = i
+    for (i = 2; i <= ntask; i++) for (j = i; j > 1 && turns[order[idx[j]]] > turns[order[idx[j-1]]]; j--) { t = idx[j]; idx[j] = idx[j-1]; idx[j-1] = t }
+    for (i = 1; i <= ntask; i++) {
+      k = order[idx[i]]; split(k, p, SUBSEP)
+      fix = impl[k] > 0 ? impl[k] - 1 : 0
+      printf "%-28s %-6s %-15s %-18s %5d %4d %3s %3d %6d %8s %8s\n", substr(p[2], 1, 28), status[k], verdict[k], imodel[k], ncalls[k], fix, (esc[k] ? "yes" : "-"), cn[k], turns[k], dur(secs[k]), money(cost[k])
+      tc += cost[k]
+      if (imodel[k] != "") { m = imodel[k]; mt[m]++; if (status[k] == "green" && verdict[k] == "approve") mp[m]++; mf[m] += fix; if (esc[k]) me[m]++ }
+    }
+    printf "\n%-20s %-8s %-8s %5s %6s %8s %7s %7s %7s %8s %4s %8s\n", "ROLE", "HARNESS", "MODEL", "CALLS", "TURNS", "TIME", "IN", "OUT", "CACHED", "COST", "ERR", "NO DATA"
+    for (i = 1; i <= ng; i++) {
+      g = gorder[i]; split(g, p, SUBSEP)
+      printf "%-20s %-8s %-8s %5d %6d %8s %7s %7s %7s %8s %4d %8d\n", p[1], p[2], p[3], gc[g], gt[g], dur(gs[g]), tok(gin[g]), tok(gout[g]), tok(gcache[g]), money(gcost[g]), gerr[g], gna[g]
+    }
+    printf "\n%-18s %5s %9s %9s %10s %15s\n", "IMPLEMENTER", "TASKS", "PASSED", "FIX/TASK", "ESCALATED", "COST/PASSED"
+    for (m in mt) {
+      mc = 0; for (i = 1; i <= ntask; i++) if (imodel[order[i]] == m) mc += cost[order[i]]
+      printf "%-18s %5d %4d %3.0f%% %9.1f %10d %15s\n", m, mt[m], mp[m], 100 * mp[m] / mt[m], mf[m] / mt[m], me[m], (mp[m] ? money(mc / mp[m]) : "-")
+    }
+    printf "\n%d tasks, %s in total. FIX: fix rounds; ESC: escalated to implementer-strong; CN: review rounds that asked for changes; NO DATA: calls without usage (failed, or logged before metrics). Cost: list-price estimate.\n", ntask, money(tc)
+  }' <(outcomes "$@") <(calls "$@")
+```
+
+Cost is the harness's own estimate at list price. On a subscription it's notional: it tells you
+which tasks and roles are expensive relative to each other, not what you pay. Track the
+subscription quota separately.
 
 ### Harness-specific steps
 
@@ -2214,9 +2355,15 @@ log.
 
 **Claude Code:**
 
-1. The last line of each `stream-json` run is a `result` event with `total_cost_usd`, `usage`,
-   `num_turns` and `duration_ms`. It's ready to use.
-2. On a subscription the cost is notional. Track quota usage separately.
+1. Each call ends with a `result` event with `total_cost_usd`, `modelUsage` (tokens per model,
+   subagents included), `num_turns` and `duration_ms`. Roles with `output: text` run with
+   `--output-format json`: `run.sh` writes `.result` to `$role.out.md` and appends the whole
+   object to `$role.events.jsonl`.
+2. A call that continues a session (`--continue`, the fix rounds) reports the session's totals,
+   earlier calls included (Claude Code 2.1.277 and later). The parser subtracts the previous
+   result of the same session from cost and tokens. **Test this** on the first run with a fix
+   round: the docs don't say whether `num_turns` and `duration_ms` accumulate too. Compare the
+   second row's turns with the number of assistant turns after the first `result` event.
 
 **Codex:**
 
@@ -2232,6 +2379,55 @@ log.
    the session. **Test this** for `--continue` runs: if `num_turns` is above 1 in a fix round,
    the counters cover the whole conversation. In that case, take the difference from the
    previous `result` event, or fix rounds will be counted twice.
+
+**Try it:** run `bin/metrics` over your runs so far. Check one task's row against its
+`*.events.jsonl` by hand. Then run the `retro` skill and see what it makes of the outliers.
+
+**Done when:** a new fan-out run shows `usage:` for every task in `collect`, `bin/metrics`
+reports no `NO DATA` calls for it, and retro has used the numbers in a proposal.
+
+---
+
+## Module 9: Evals, decisions backed by numbers (postponed)
+
+**Status:** designed, not built. Build it when you want to change routing or a role prompt and
+real runs can't tell you whether the change helped, or before a big change to `run-task` or an
+adapter.
+
+**Goal:** a change to `config/routing.json`, a role prompt or a factory script is backed by eval
+numbers: the same frozen tasks, run before and after.
+
+**Frozen** means fixed for good: the same task file, the same starting commit and the same
+hidden tests on every run, so the configuration is the only thing that differs between two runs.
+**Hidden tests** are tests the implementer never sees. They aren't in its worktree and are copied
+in only after the run, to score it, so a model can't pass by writing weak tests of its own.
+
+**Build:**
+
+- **A fixture product**, owned by the factory but in its own repo next to it (for example
+  `~/factory-model-evals`), not in `factory-model`. Two reasons: the sandbox mounts the whole
+  factory read-only into every worker, so hidden tests inside it wouldn't be hidden; and a
+  product's code doesn't belong in the factory (`AGENTS.md`, rule 1). The fixture meets the
+  product contract like any product (`AGENTS.md`, `scripts/verify`, `toolchain.Containerfile`),
+  with a small stack that verifies fast, such as Python with `pytest`.
+- **About 3 frozen tasks** in `evals/<id>/` of the fixture repo: `task.md`, `base` (the commit to
+  start from) and `hidden/` (the tests). Pick tasks that exercise the factory, not just the model:
+  - a plain task, for pass rate and cost;
+  - a task whose existing tests contradict the obvious implementation, so verify fails first and
+    the fix loop and escalation run (see `docs/todo.md`);
+  - a task with a trap the reviewer should catch.
+  Hidden tests call only names the task file fixes (classes, signatures, error types).
+- **`bin/eval [--routing <file>] <evals-repo>`**: for each eval, a worktree at `base` on a
+  branch `eval/<run>/<id>`, then `run-task` with that routing (`ROUTING=<file>`, which
+  `bin/agent-run` already reads), then the hidden tests copied in and `scripts/verify` run in the
+  sandbox, offline: pass or fail. It prints `bin/metrics` over the eval run with the score added,
+  and removes its worktrees and branches. Decide when you build it whether evals skip the
+  reviewer: the hidden tests are the score, and the reviewer mostly adds cost.
+- **Product evals (optional, later):** the fixture tells you whether the factory works, not
+  which model is cheapest for your product. "The cheapest implementer that passes" depends on
+  the product's stack and difficulty. For routing decisions about one product, make evals from
+  its finished tasks in the same format, in a repo next to the product: the commit before the
+  task was merged, the task file, and its tests tightened where the review found gaps.
 
 **Try it:** run the evals with two implementer models, or with the same model on two harnesses.
 Keep whichever wins on cost per passed task.
@@ -2250,8 +2446,9 @@ Keep whichever wins on cost per passed task.
 | 4–5 | Repeatable work orders and cross-model review |
 | 6 | Real parallelism without chatting to each agent |
 | 7 | An orchestrator, and a factory that improves itself |
-| 8 | Model routing and factory changes decided by data |
+| 8 | Metrics: what each run cost and where the effort went |
+| 9 | Evals: routing and factory changes decided by numbers (postponed) |
 
 Adding another harness later means following the "harness-specific steps" of each module for it:
 an `adapters/<name>/Containerfile`, a guard wrapper, `adapters/<name>/run.sh` that meets the adapter contract, and
-a metrics parser. Nothing in the neutral core changes.
+`adapters/<name>/metrics.sh`. Nothing in the neutral core changes.
