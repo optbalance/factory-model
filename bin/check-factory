@@ -7,7 +7,7 @@ set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$FACTORY_HOME"
 
-dirs=(config sandbox roles skills guards bin adapters templates runs)
+dirs=(config sandbox roles skills guards bin adapters forges/local templates runs)
 files=(
   AGENTS.md
   package.json

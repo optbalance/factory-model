@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# usage: metrics [--tsv] [dir...]   (dirs: runs, fan-out runs or task run dirs; default: all of runs/)
+# usage: metrics [--tsv | --summary] [dir...]   (dirs: runs, fan-out runs or task run dirs; default: all of runs/)
 # Turns run logs into numbers. Each call in a task's calls.log is matched with a row from its
 # harness's parser (adapters/<harness>/metrics.sh), in call order. Prints:
 #   per task:  status, verdict, implementer model, calls, fix rounds, escalation, review rounds with
 #              changes-needed, turns, duration, cost; most turns first, so outliers lead
 #   per role × harness × model: calls, turns, duration, tokens, cost, and for implementers the pass
 #              rate (green and approved), fix rounds and escalation rate
+# --summary prints one line for the given dirs: turns, time and cost (for collect and pull requests)
 # --tsv prints one row per call instead, for other scripts:
 #   run task role harness model turns duration_s tokens_in tokens_out tokens_cached cost_usd error
 # (the last seven empty when the call recorded no usage)
@@ -13,7 +14,7 @@
 set -euo pipefail
 export LC_ALL=C                                   # "." decimals in awk and printf, whatever the locale
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
-tsv=0; [ "${1:-}" = --tsv ] && { tsv=1; shift; }
+mode=report; case "${1:-}" in --tsv) mode=tsv; shift ;; --summary) mode=summary; shift ;; esac
 [ $# -ge 1 ] || set -- "$FACTORY_HOME/runs"
 routing="$FACTORY_HOME/config/routing.json"
 
@@ -40,13 +41,18 @@ calls() {
   done
 }
 
-if [ $tsv = 1 ]; then calls "$@"; exit 0; fi
+if [ $mode = tsv ]; then calls "$@"; exit 0; fi
+if [ $mode = summary ]; then
+  calls "$@" | awk -F'\t' '$6 != "" { t += $6; s += $7; c += $11; n++ }
+    END { if (n) printf "%d turns, %dm%02ds, $%.2f (list-price estimate)\n", t, s / 60, s % 60, c }'
+  exit 0
+fi
 
 # task outcomes: run task status verdict review-rounds-with-changes-needed
 outcomes() {
   find "$@" -maxdepth 3 -name calls.log | sort | while read -r log; do
     d=$(dirname "$log")
-    cn=0; for f in "$d"/review-*.md; do [ -f "$f" ] && head -1 "$f" | grep -q '^VERDICT: changes-needed' && cn=$((cn + 1)); done
+    cn=0; for f in "$d"/review-[0-9]*.md; do [ -f "$f" ] && head -1 "$f" | grep -q '^VERDICT: changes-needed' && cn=$((cn + 1)); done
     printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$(dirname "$d")")" "$(basename "$d")" \
       "$(cat "$d/status" 2>/dev/null || echo -)" "$(cat "$d/verdict" 2>/dev/null || echo -)" "$cn"
   done

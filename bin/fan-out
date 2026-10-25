@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # usage: fan-out <product-dir> <task-file>...   (task paths relative to the product root, committed on main)
 # Runs the tasks in parallel, each in its own worktree <product-dir>-wt/<id> on branch factory/<id>.
-# Results go to runs/<timestamp>/<id>; read them with bin/collect.
+# Results go to runs/<timestamp>/<id>; read them with bin/collect. Each task that ends green and
+# approved is submitted to the product's forge (bin/forge submit): ready for your review.
 set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
 [ $# -ge 2 ] || { echo "usage: fan-out <product-dir> <task-file>..." >&2; exit 2; }
@@ -20,6 +21,7 @@ for task in "$@"; do
   [ -z "$err" ] || { echo "fan-out: $task: $err" >&2; bad=1; }
   seen[$id]=1
 done
+"$FACTORY_HOME/bin/forge" name "$PRODUCT" > /dev/null || bad=1   # a broken factory.properties
 [ $bad = 0 ] || exit 2
 
 mkdir -p "$FACTORY_HOME/runs"
@@ -33,7 +35,11 @@ for task in "$@"; do
   git -C "$PRODUCT" worktree add -q -b "factory/$id" "$wt" main \
     || { echo "fan-out: $task: creating the worktree failed, skipped" >&2; continue; }
   echo "$wt" > "$RUN/$id/worktree"               # for bin/collect
-  "$FACTORY_HOME/bin/run-task" "$wt" "$task" "$RUN/$id" > "$RUN/$id/run-task.log" 2>&1 &
+  rd="$RUN/$id"
+  ( "$FACTORY_HOME/bin/run-task" "$wt" "$task" "$rd" || exit 0
+    [ "$(cat "$rd/status")/$(cat "$rd/verdict")" = green/approve ] || exit 0
+    "$FACTORY_HOME/bin/forge" submit "$PRODUCT" "$rd" || echo "fan-out: submit failed"
+  ) > "$rd/run-task.log" 2>&1 &
   echo "fan-out: started $id"
 done
 wait

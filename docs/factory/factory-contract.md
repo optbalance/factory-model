@@ -15,6 +15,7 @@ done is in `docs/factory/operating-the-factory.md`.
 | 6 | Secret values | `~/.config/factory/env` (outside every repo) | always |
 | 7 | Routing | `config/routing.json` (committed) | from Module 3 |
 | 8 | Check | — | always |
+| 9 | Forge sign-in | the host | for products reviewed on a forge (product contract, Step 6) |
 
 ---
 
@@ -96,3 +97,14 @@ layers go into the worker image. Format: `docs/how-to/building-the-factory.md`, 
 ```
 
 Then plug in a product (`operating-the-factory.md`).
+
+## Step 9. Forge sign-in
+
+Only for a product whose `factory.properties` names a forge other than `local`. Forge calls run
+on the host, never in a sandbox, with the host's own sign-in:
+
+| Forge | Needs |
+|---|---|
+| `github` | `git push` to the product's remote works (SSH key or credential helper); the GitHub CLI `gh` is installed and `gh auth status` succeeds, with access to pull requests and contents |
+
+Never put a forge token in `config/sandbox-env`: agents never talk to the forge.

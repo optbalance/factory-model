@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# usage: review [product-dir]                                   pick a task, read it, decide (local forge)
+#        review status [product-dir] [all | <id> | factory/<id>]  where each task's review stands
+#        review sync [product-dir]                              act on the forge's decisions (any forge)
+# Works only on this machine's tasks: a factory/<id> branch in the product repo with a run dir in
+# runs/ whose worktree file points to <product-dir>-wt/<id>. Other people's factory/* branches and
+# pull requests on the same remote are never touched. product-dir defaults to the current repo.
+# Run it through bin/start when it may start a rework (remarks, sync): the agents need the secrets.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+die() { echo "review: $*" >&2; exit 2; }
+mode=pick; case "${1:-}" in status|sync) mode=$1; shift ;; esac
+if [ $# -ge 1 ] && [ -d "$1" ]; then P=$1; shift; else P=.; fi
+P=$(git -C "$P" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || die "not a git repo; give the product dir"
+P=$(dirname "$P")                                       # the main checkout, also from inside a worktree
+[ "$P" != "$FACTORY_HOME" ] || die "this is the factory; give the product dir"
+forge=$("$FACTORY_HOME/bin/forge" name "$P")
+
+# tasks: "<id> TAB <run-dir>" for each factory/<id> branch; the run dir is empty when this machine
+# has none for it (the newest run wins when a task was re-queued)
+tasks() {
+  git -C "$P" for-each-ref --format='%(refname:strip=2)' 'refs/heads/factory/*' | while read -r b; do
+    id=${b#factory/}; rd=""
+    while read -r f; do
+      [ "$(cat "$f")" = "$P-wt/$id" ] && rd=$(dirname "$f")
+    done < <(ls -d "$FACTORY_HOME"/runs/*/"$id"/worktree 2>/dev/null | sort)
+    printf '%s\t%s\n' "$id" "$rd"
+  done
+}
+running() { [ -d "$1/rework.lock" ] || [ ! -f "$1/status" ]; }
+fstatus() { "$FACTORY_HOME/bin/forge" status "$P" "$1" 2>/dev/null || echo error; }
+
+# verify_main: scripts/verify on main, in a fresh offline sandbox (each branch was verified alone)
+verify_main() {
+  local wt="$P-wt/main-check" rd; rd="$FACTORY_HOME/runs/main-check-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$rd"; git -C "$P" worktree remove --force "$wt" 2>/dev/null || true
+  git -C "$P" worktree add -q --detach "$wt" main
+  local r=0; "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rd" -- scripts/verify > "$rd/verify.log" 2>&1 || r=1
+  git -C "$P" worktree remove --force "$wt"
+  if [ $r = 0 ]; then echo "review: main verified"; else echo "review: main is RED after the merge, don't start a batch: $rd/verify.log" >&2; fi
+  return $r
+}
+# cleanup <id> <-d|-D>: remove a merged task's worktree (if it holds nothing but REPORT.md, whose
+# copy is in the run dir) and its branch
+cleanup() {
+  local wt="$P-wt/$1"
+  if [ -d "$wt" ]; then
+    if git -C "$wt" status --porcelain | grep -v '^?? REPORT.md$' | grep -q .; then
+      echo "review: $1: $wt has changes besides REPORT.md; left in place, with its branch" >&2; return 0
+    fi
+    git -C "$P" worktree remove --force "$wt"
+  fi
+  git -C "$P" branch -q "$2" "factory/$1" && echo "review: $1: merged, worktree and branch removed"
+}
+
+case "$mode" in
+status)
+  want=${1:-all}; want=${want#factory/}
+  printf '%-30s %-18s %-22s %7s  %s\n' TASK REVIEW RUN REMARKS LINK
+  while IFS=$'\t' read -r id rd; do
+    [ "$want" = all ] || [ "$want" = "$id" ] || continue
+    if [ -z "$rd" ]; then printf '%-30s %-18s\n' "$id" "no run dir"; continue; fi
+    if running "$rd"; then run=running
+    else run="$(cat "$rd/status")/$(cat "$rd/verdict" 2>/dev/null || echo none)"; fi
+    [ -d "$rd/rework.lock" ] && run="rework running"
+    printf '%-30s %-18s %-22s %7s  %s\n' "$id" "$(fstatus "$rd")" "$run" \
+      "$(ls "$rd"/user-review-*.md 2>/dev/null | wc -l || true)" "$(sed -n 's/^url=//p' "$rd/forge-state" 2>/dev/null | tail -1)"
+  done < <(tasks)
+  ;;
+
+sync)
+  merged=(); rework=()
+  while IFS=$'\t' read -r id rd; do
+    [ -n "$rd" ] || { echo "review: $id: no run dir on this machine, not touched"; continue; }
+    running "$rd" && { echo "review: $id: running"; continue; }
+    st=$(fstatus "$rd")
+    case "$st" in
+      changes-requested) rework+=("$rd") ;;
+      merged)            merged+=("$id") ;;
+      closed)            echo "review: $id: closed; the orchestrate skill triages it (task file or spec)" ;;
+      *)                 echo "review: $id: $st" ;;
+    esac
+  done < <(tasks)
+  red=0
+  if [ ${#merged[@]} -gt 0 ]; then
+    if [ "$forge" != local ]; then                       # merged on the forge: bring main up to date
+      remote=$("$FACTORY_HOME/bin/forge" remote "$P")
+      if [ "$(git -C "$P" symbolic-ref -q --short HEAD)" = main ] && [ -z "$(git -C "$P" status --porcelain)" ]; then
+        git -C "$P" pull -q --ff-only "$remote" main
+      else
+        echo "review: $P is not a clean checkout of main; pull $remote main yourself, then verify it" >&2; red=1
+      fi
+    fi
+    [ $red = 1 ] || verify_main || red=1
+    for id in "${merged[@]}"; do
+      if [ "$forge" = local ]; then cleanup "$id" -d
+      else cleanup "$id" -D; fi                          # squashed or merge-committed: not an ancestor of main
+    done
+  fi
+  if [ ${#rework[@]} -gt 0 ]; then
+    "$FACTORY_HOME/bin/rework" --check && "$FACTORY_HOME/bin/rework" "${rework[@]}" || red=1
+  fi
+  exit $red
+  ;;
+
+pick)
+  [ "$forge" = local ] || die "this product is reviewed on $forge: review its pull requests there, then run: bin/review sync"
+  [ -t 0 ] || die "this mode is interactive; scripts use status or sync"
+  while true; do
+    declare -A rdof=(); ready=(); labels=()
+    while IFS=$'\t' read -r id rd; do
+      [ -n "$rd" ] && ! running "$rd" && [ "$(fstatus "$rd")" = pending ] || continue
+      ready+=("$id"); rdof[$id]=$rd
+      if [ "$(cat "$rd/verdict" 2>/dev/null)" = approve ]; then labels+=("$id"); else labels+=("$id [AI reviewer objects]"); fi
+    done < <(tasks)
+    [ ${#ready[@]} -gt 0 ] || { echo "review: nothing is ready for review (bin/review status shows every task)"; exit 0; }
+    echo; PS3="Task to review (Ctrl-D quits): "; id=""
+    select l in "${labels[@]}"; do [ -n "$l" ] && { id=${ready[REPLY-1]}; break; }; done
+    [ -n "$id" ] || exit 0
+    rd=${rdof[$id]}
+    "$FACTORY_HOME/bin/collect" "$rd"
+    last=$(ls "$rd"/review-[0-9]*.md 2>/dev/null | sort -V | tail -1 || true)
+    [ -n "$last" ] && { echo; echo "--- AI review ($(basename "$last")):"; cat "$last"; }
+    echo; read -rp "Enter shows the diff (q leaves the pager) " _
+    git -C "$P" diff "main...factory/$id"
+    echo; PS3="Decision for $id: "; d=""
+    select d in approve remarks re-queue skip; do [ -n "$d" ] && break; done
+    case "$d" in
+      approve)
+        if "$FACTORY_HOME/bin/forge" merge "$P" "$rd"; then verify_main || true; cleanup "$id" -d; fi ;;
+      remarks)
+        "$FACTORY_HOME/bin/rework" --check || continue
+        f="$rd/remarks.edit.md"; : > "$f"
+        "${VISUAL:-${EDITOR:-vi}}" "$f"
+        grep -q '[^[:space:]]' "$f" || { rm -f "$f"; echo "review: no remarks written, nothing sent"; continue; }
+        mv "$f" "$rd/remarks.pending.md"                 # what forges/local/remarks.sh hands over
+        nohup "$FACTORY_HOME/bin/rework" "$rd" > "$rd/rework.out" 2>&1 &
+        echo "review: rework of $id started; follow it with: bin/review status $id" ;;
+      re-queue)
+        echo "decision=closed" >> "$rd/forge-state"      # what forges/local/status.sh reports as closed
+        echo "review: $id marked closed; the orchestrate skill rewrites its task file and re-queues it" ;;
+      *) ;;
+    esac
+  done
+  ;;
+esac

@@ -12,4 +12,5 @@ envfile="${FACTORY_ENV:-$HOME/.config/factory/env}"
 [ -z "$(find "$envfile" -perm /077)" ] \
   || echo "start: $envfile is readable by other users; run: chmod 600 $envfile" >&2
 set -a; . "$envfile"; set +a
+export FACTORY_STARTED=1                        # for scripts that start agents later (bin/rework)
 exec "$@"

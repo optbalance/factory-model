@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
 # usage: run-task <worktree> <task-file> <run-dir>   (task-file: relative to the worktree)
+#        run-task --rework <worktree> <task-file> <run-dir> <remarks-file>
+# --rework: the same loop on an earlier run's branch and run dir, with your review remarks as the
+# input. They are saved as user-review-<n>.md; the implementer continues its session.
 set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
+rework=0; [ "${1:-}" = --rework ] && { rework=1; shift; }
 wt=$1; task=$2; rundir=$3; mkdir -p "$rundir"
 branch=$(git -C "$wt" symbolic-ref -q HEAD) || { echo "run-task: $wt is not on a branch" >&2; exit 2; }
 [ -f "$wt/$task" ] || { echo "run-task: task file $task not found in $wt (give it relative to the worktree)" >&2; exit 2; }
+echo "$task" > "$rundir/task"                    # for bin/rework
 run() { "$FACTORY_HOME/bin/agent-run" "$@"; }
 verify() { "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- scripts/verify > "$rundir/verify.log" 2>&1; }
 
-{ printf 'Complete the task in %s. Write REPORT.md as it specifies.\n' "$task"
-  printf 'Do not add, remove or upgrade dependencies: everything this task needs is already declared on main and in the image. If you need a change, stop and explain which one and why under open questions in REPORT.md.\n'
-} > "$rundir/brief.md"
+if [ $rework = 0 ]; then
+  { printf 'Complete the task in %s. Write REPORT.md as it specifies.\n' "$task"
+    printf 'Do not add, remove or upgrade dependencies: everything this task needs is already declared on main and in the image. If you need a change, stop and explain which one and why under open questions in REPORT.md.\n'
+  } > "$rundir/brief.md"
+fi
 
-# The implementer: its session continues across fix rounds; implementer-strong starts a new one.
+# The implementer: its session continues across fix rounds and reworks; implementer-strong starts
+# a new one. $rundir/worker records which one ran last, so a rework continues it.
 worker=implementer; fresh=1
+if [ $rework = 1 ]; then worker=$(cat "$rundir/worker" 2>/dev/null || echo implementer); fresh=0; fi
 call() {
+  echo "$worker" > "$rundir/worker"
   if [ $fresh = 1 ]; then fresh=0; run "$worker" "$wt" "$1" "$rundir" || true
   else CONTINUE=1 run "$worker" "$wt" "$1" "$rundir" || true; fi
 }
@@ -36,13 +46,16 @@ head_ok() {
   [ "$(git -C "$wt" symbolic-ref -q HEAD)" = "$branch" ] && return 0
   echo "run-task: HEAD is no longer on ${branch#refs/heads/}; the agent moved it" | tee "$rundir/head.log" >&2; return 1
 }
+# The user's review remarks so far (comma-separated paths), empty on a task's first run.
+user_reviews() { ls "$rundir"/user-review-*.md 2>/dev/null | paste -sd, - | sed 's/,/, /g' || true; }
 # Commit the work (REPORT.md stays out of the product's history), then have it reviewed.
 review() {
   git -C "$wt" add -A -- . ':(top,exclude)REPORT.md' || return 1
   git -C "$wt" diff --cached --quiet || git -C "$wt" commit -qm "factory: $(basename "$task" .md)" || return 1
   git -C "$wt" diff main...HEAD > "$rundir/diff.patch" || return 1
   { printf 'Task: %s\nDiff: %s\nReport: REPORT.md\n' "$task" "$rundir/diff.patch"
-    [ "$1" = 1 ] || printf 'This is review round %s: the implementer has addressed your findings, and the diff file now holds the whole change again. Review all of it.\n' "$1"
+    [ "$1" = 1 ] || printf 'This is review round %s: the change was revised since your last review, and the diff file holds the whole change again. Review all of it.\n' "$1"
+    [ -z "$(user_reviews)" ] || printf 'User review: %s\n' "$(user_reviews)"
   } > "$rundir/review-brief.md"
   rm -f "$rundir/reviewer.out.md"
   if [ "$1" = 1 ]; then run reviewer "$wt" "$rundir/review-brief.md" "$rundir" || true
@@ -52,15 +65,30 @@ review() {
   case "$verdict" in approve|changes-needed) ;; *) verdict=error ;; esac   # no answer, or no VERDICT line
 }
 
+# The first prompt: the brief, or for a rework your remarks
+first="$rundir/brief.md"
+if [ $rework = 1 ]; then
+  remarks=$4; [ -s "$remarks" ] || { echo "run-task: no remarks in $remarks" >&2; exit 2; }
+  n=$(( $(ls "$rundir"/user-review-*.md 2>/dev/null | wc -l || true) + 1 ))
+  cp "$remarks" "$rundir/user-review-$n.md"
+  rm -f "$rundir/status" "$rundir/verdict"     # running again (bin/collect, the forge's status)
+  { printf 'The user reviewed your change to the task in %s and asks for the changes below. Fix each one (don'"'"'t weaken the tests). Answer their questions, and say what you changed for each remark, under a "Review answers" section in REPORT.md.\n\n' "$task"
+    cat "$rundir/user-review-$n.md"; } > "$rundir/rework-$n.md"
+  first="$rundir/rework-$n.md"
+fi
+reviewed=$(ls "$rundir"/review-[0-9]*.md 2>/dev/null | wc -l || true)   # a rework's AI reviews keep counting
+
 status=red; verdict=none
-work "$rundir/brief.md" && status=green
+work "$first" && status=green
 head_ok || status=red
 if [ $status = green ]; then
   for round in 1 2 3; do                     # review, then up to 2 rounds of fixing its findings
-    review $round || { echo "run-task: committing the work failed" >&2; status=red; verdict=error; break; }
+    review $((reviewed + round)) || { echo "run-task: committing the work failed" >&2; status=red; verdict=error; break; }
     [ "$verdict" = changes-needed ] && [ $round -lt 3 ] || break
     { echo "A reviewer found problems in your change. Fix each finding (don't weaken the tests), then update REPORT.md:"
-      tail -n +2 "$rundir/reviewer.out.md"; } > "$rundir/review-fix.md"
+      tail -n +2 "$rundir/reviewer.out.md"
+      [ -z "$(user_reviews)" ] || printf '\nThe user'"'"'s remarks (%s) decide what the change must do. Fix every finding about how it'"'"'s done (bugs, tests, security, conventions) while keeping what the user asked for. Only when a finding says a remark itself can'"'"'t be met without a problem: keep the remark, and explain the conflict under "Review answers" in REPORT.md; the user decides.\n' "$(user_reviews)"
+    } > "$rundir/review-fix.md"
     if ! work "$rundir/review-fix.md" || ! head_ok; then status=red; break; fi
   done
 fi

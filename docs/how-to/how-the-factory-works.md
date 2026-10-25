@@ -173,12 +173,18 @@ sequenceDiagram
       Run->>Rev: the whole diff again
     end
   end
+  Run->>Run: green + approve: forge submit (GitHub: push factory/<id>, open a pull request)
   Run-->>Orch: runs/<run>/<id>/: status, verdict, REPORT.md
   Orch->>Orch: bin/collect, triage: answer questions, rewrite tasks, re-queue failures
-  Orch->>You: branches ready to merge, open questions, escalations
-  You->>Prod: merge factory/<id> into main
-  You->>WT: git worktree remove, delete the branch
-  You->>Orch: failures → docs/factory-log.md → retro → factory improvements
+  Orch->>You: tasks ready for review (bin/review, or their pull requests), questions, escalations
+  loop until you approve
+    You->>Run: remarks (bin/review, or "Request changes" + bin/review sync)
+    Run->>Impl: bin/rework: your remarks, in the implementer's own session
+    Run->>Run: verify, AI review, submit again
+  end
+  You->>Prod: approve: merged into main (bin/review, or the pull request)
+  Run->>WT: bin/review: verify main, remove the worktree and the branch
+  You->>Orch: failures and remarks → retro → product or factory improvements
 ```
 
 Steps 1–6 are interactive and happen once per story. Steps 7 and later repeat for each batch of
@@ -191,7 +197,8 @@ tasks until the story's tasks are merged. Three rules hold for every task:
 - **Done means verified.** Only `scripts/verify` decides a task is green, checked by the runner
   after the agent exits. The model can't declare itself done.
 - **You merge.** Agents never push or merge. The runner commits to local `factory/<id>`
-  branches, and you decide what reaches `main`.
+  branches; the factory's scripts (never an agent) may push them to the product's forge for your
+  review, and you decide what reaches `main`.
 
 ### Inside one task (`bin/run-task`)
 
@@ -221,7 +228,7 @@ except what's in the worktree and the run directory.
 |---|---|---|
 | Spec, task files | product: `docs/specs/` | yes, on `main` |
 | Code changes, `REPORT.md` | worktree, branch `factory/<id>` | merged by you, or dropped |
-| Briefs, `calls.log`, `verify.log`, `status`, `verdict`, `diff.patch`, `review-<n>.md`, a copy of `REPORT.md`; from `fan-out`: `run-task.log`, `worktree`, and `build-worker.log` per run | factory: `runs/<run>/<id>/` | gitignored, local history |
+| Briefs, `calls.log`, `verify.log`, `status`, `verdict`, `diff.patch`, `review-<n>.md`, a copy of `REPORT.md`, `task`, `worker`; from `fan-out`: `run-task.log`, `worktree`, and `build-worker.log` per run; from your reviews: `user-review-<n>.md`, `rework-<n>.md` and `rework-<n>.log`, `forge-state` | factory: `runs/<run>/<id>/` | gitignored, local history |
 | Approved dependency changes | product: build files and lockfiles, plus `docs/specs/NNN-name/dependencies.md` | yes, on `main` |
 | Failures and their fixes | factory: `docs/factory-log.md` | yes, drives factory improvements |
 | Product knowledge learned | product: `AGENTS.md` | yes |

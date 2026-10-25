@@ -49,12 +49,14 @@ when it's fixed.
   runner, or needs changes outside `adapters/`. Fix: when a second provider or harness is
   available, write its adapter (`docs/adapter/adapter-contract.md`), switch only the implementer's
   routing entry, and rerun a small task to green; then do the same for the harness.
-- **Fix rounds and escalation in `bin/run-task` have never run.** Module 3's second "Try it"
-  (`docs/how-to/building-the-factory.md`) was skipped: no run so far failed verify, so the fix
-  loop (`fix.md`, `CONTINUE=1` on the implementer's session, then a fresh `implementer-strong`
-  session) is untested. What could go wrong: `--continue` doesn't find the session under
-  `$rundir/claude/implementer`, the fix prompt lacks what the model needs, or escalation never
-  triggers, and a task that could be fixed ends `red`. Test it when the first real task goes red,
+- **Verify fix rounds and escalation in `bin/run-task` have never run.** Module 3's second "Try
+  it" (`docs/how-to/building-the-factory.md`) was skipped: no run so far failed verify, so the
+  verify fix loop (`fix.md`, then a fresh `implementer-strong` session) is untested. Continuing the
+  implementer's session does work: in shovel task 005 the AI review's fix round
+  (`review-fix.md`, Module 5) and a rework two days later ran in the first run's session (one
+  `session_id` in `implementer.events.jsonl`). What could still go wrong: the verify fix prompt
+  lacks what the model needs, or escalation never triggers, and a task that could be fixed ends
+  `red`. Test it when the first real task goes red,
   or with a task the existing tests contradict; expect `calls.log` to show three `implementer`
   calls and one `implementer-strong`. A run that changes nothing ends `green` with
   verdict `changes-needed` (the reviewer sees an empty diff). The same run tests `adapters/claude/metrics.sh` on a
@@ -68,3 +70,21 @@ when it's fixed.
   compare the findings) can only be half done. Fix: when a second harness or provider is
   available (see the provider-switch bullet above), route `reviewer` to it, rerun the comparison
   and keep the family that finds more real issues.
+- **The GitHub forge has never run against GitHub.** `forges/github/` (Module 10,
+  `docs/forge/forge-contract.md`) was tested only with a stub `gh` and a local bare repo as the
+  remote; `gh` isn't installed on the host yet. The `gh` commands follow its manual and GitHub's
+  REST docs, but these are unverified: that the review list's `state` is `CHANGES_REQUESTED` for
+  "Request changes", that `GH_REPO` with a host part works for `gh api`'s `{owner}/{repo}`, and how
+  `gh pr create` behaves when a closed pull request already exists for the branch. What goes wrong
+  if one is off: `bin/review sync` never sees your requested changes, or `submit` fails after the
+  push. Test it with a throwaway GitHub repository: install `gh`, `gh auth login`, add
+  `factory.properties` with `forge=github`, then follow Module 10's "Try it", including a
+  squash merge and running `bin/review sync` twice.
+- **`run-task --rework`'s handling of your remarks against the AI reviewer is untested with real
+  agents.** One real rework ran (shovel task 005, before the fix): the implementer applied the
+  remark and wrote `Review answers`, then the reviewer, who didn't see the remarks, had it
+  reverted. Since then the reviewer gets the remarks, and remarks decide *what*, the reviewer
+  *how* (`bin/run-task` `user_reviews`, `roles/reviewer.md`), tested with a stubbed
+  `bin/agent-run` only. Check on the next real remark: the reviewer no longer flags the remark as
+  scope, bugs in the remark's code are still fixed, and a genuine conflict ends as
+  `[AI reviewer objects]` with the conflict under `Review answers`.

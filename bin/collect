@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# usage: collect [run-dir]   (default: the newest fan-out run in runs/)
+# usage: collect [run-dir | task-run-dir]   (default: the newest fan-out run in runs/)
 # Prints, for each task of a run: status, review verdict, what to do next, the models used, usage
 # (bin/metrics), the diff stat, and the "Not done" and "Open questions" sections of REPORT.md.
 set -euo pipefail
@@ -18,27 +18,32 @@ section() {
     on' "$1" | sed 's/^/  /'
 }
 
-echo "Run: $RUN"
-for d in "$RUN"/*/; do
+if [ -f "$RUN/worktree" ]; then dirs=("$RUN/")             # one task
+else echo "Run: $RUN"; dirs=("$RUN"/*/); fi
+for d in "${dirs[@]}"; do
   d=${d%/}; id=$(basename "$d")
   [ -f "$d/brief.md" ] || [ -f "$d/worktree" ] || continue
   status=$(cat "$d/status" 2>/dev/null || echo running); verdict=$(cat "$d/verdict" 2>/dev/null || echo none)
-  last_review=$(ls "$d"/review-*.md 2>/dev/null | sort -V | tail -1 || true)
+  last_review=$(ls "$d"/review-[0-9]*.md 2>/dev/null | sort -V | tail -1 || true)
   case "$status/$verdict" in
-    green/approve)        next="ready to merge: factory/$id" ;;
-    green/changes-needed) next="reviewer still has findings after the last round: ${last_review:-no review file}" ;;
+    green/approve)        next="ready for your review: bin/review, or the pull request below" ;;
+    green/changes-needed) if ls "$d"/user-review-*.md >/dev/null 2>&1; then
+                            next="ready for your review; the AI reviewer objects after your remarks: ${last_review:-no review file}"
+                          else next="reviewer still has findings after the last round: ${last_review:-no review file}"; fi ;;
     green/*)              next="the review failed: see $d/run-task.log" ;;
     red/*)                next="verify failed: $d/verify.log" ;;
     *)                    next="no result yet (still running, or killed): $d/run-task.log" ;;
   esac
   [ -f "$d/head.log" ] && next="$next; $(cat "$d/head.log")"
+  [ -d "$d/rework.lock" ] && next="rework of your remarks running: $(ls "$d"/rework-*.log 2>/dev/null | sort -V | tail -1 || true)"
 
   echo; echo "== $id: $status / $verdict"
   echo "next:   $next"
   [ -f "$d/calls.log" ] && echo "models: $(awk '{print $2 " " $3}' "$d/calls.log" | sort | uniq -c \
                                           | awk '{printf "%s%s %s x%s", sep, $2, $3, $1; sep=", "}')"
-  usage=$("$FACTORY_HOME/bin/metrics" --tsv "$d" | LC_ALL=C awk -F'\t' '$6 != "" { t += $6; s += $7; c += $11; n++ }
-           END { if (n) printf "%d turns, %dm%02ds, $%.2f (list-price estimate)", t, s / 60, s % 60, c }')
+  url=$(sed -n 's/^url=//p' "$d/forge-state" 2>/dev/null | tail -1 || true)
+  [ -n "$url" ] && echo "review: $url"
+  usage=$("$FACTORY_HOME/bin/metrics" --summary "$d")
   [ -n "$usage" ] && echo "usage:  $usage"
   wt=$(cat "$d/worktree" 2>/dev/null || true)
   if [ -s "$d/diff.patch" ]; then

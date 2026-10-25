@@ -16,7 +16,8 @@ a fix may go.
   read the whole log; the fixed lines are history, searched in step 2.
 - `runs/`: the runs since the last retro (or the ones the user names). For each task: `status`,
   `verdict`, `calls.log`, `review-<n>.md`, `REPORT.md`, the end of `verify.log`, and
-  `abandoned.patch` if the task was re-queued. Open `*.events.jsonl` only to answer a specific
+  `abandoned.patch` if the task was re-queued. Also `user-review-<n>.md`: the user's own review
+  remarks, each one sent back to the implementer. Open `*.events.jsonl` only to answer a specific
   question (which file the agent read, which command failed).
 - The task files and specs of those runs, in the product repo (a task's run dir is named after
   its id; `worktree` in it shows the product's path).
@@ -27,6 +28,18 @@ a fix may go.
 Also look for failures nobody logged: approved branches whose reviews name real gaps, fix rounds
 in `calls.log` (more than one `implementer` call), escalations (`implementer-strong`), and the
 same open question in several reports. Add a log line for each.
+
+The user's remarks (`user-review-<n>.md`) are about the product, so a remark isn't a factory
+failure by itself. For each, decide where its cause is, often in both places:
+
+- **product:** the spec or the product's `AGENTS.md` didn't say it, or a test was missing. The
+  fix goes into the product (step 2's table).
+- **factory:** the AI reviewer approved what the user then rejected (the reviewer role missed
+  it), the `plan` skill didn't ask about something the spec left open, or the task template had
+  no place for it.
+
+Add a log line, in factory terms, only for a factory cause. The remarks carry product details;
+never copy them into the factory.
 
 Use the metrics to find outliers among tasks that went well too: many more turns, fix rounds or
 cost than the others. Read their task files and look for what they share: a part of the code, a

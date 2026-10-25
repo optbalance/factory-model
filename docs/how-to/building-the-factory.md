@@ -112,7 +112,7 @@ factory-model/
 ├── roles/                     # role prompts for headless roles: implementer.md, reviewer.md, scout.md
 ├── skills/                    # Agent Skills (SKILL.md): spec, plan, orchestrate, retro
 ├── guards/                    # neutral guard scripts + their tests
-├── bin/                       # start, sandbox, build-worker, agent-run, run-task, fan-out, collect, eval, check-product, check-factory
+├── bin/                       # start, sandbox, build-worker, agent-run, run-task, fan-out, collect, metrics, forge, rework, review, eval, check-product, check-factory
 ├── adapters/
 │   ├── pi/
 │   │   ├── Containerfile      # Pi layer of the worker image
@@ -141,6 +141,10 @@ factory-model/
 │           ├── skills -> ../../../skills
 │           ├── hooks.json
 │           └── guard.sh
+├── forges/                    # where tasks are reviewed and merged (Module 10)
+│   ├── state.sh               # per-task forge state, sourced by the forge scripts
+│   ├── local/                 # submit.sh, status.sh, remarks.sh, merge.sh: review in bin/review
+│   └── github/                # the same four, through the gh CLI; lib.sh
 ├── templates/                 # task.md, product AGENTS.md, verify, toolchain.Containerfile (examples, copied by hand)
 ├── runs/                      # run logs (gitignored)
 └── docs/
@@ -154,6 +158,8 @@ factory-model/
     │   └── operating-the-factory.md # which command for which job
     ├── adapter/
     │   └── adapter-contract.md     # what every adapters/<harness>/ must provide
+    ├── forge/
+    │   └── forge-contract.md       # what every forges/<forge>/ must provide
     └── factory-log.md
 ```
 
@@ -2008,7 +2014,7 @@ for d in "$RUN"/*/; do
   d=${d%/}; id=$(basename "$d")
   [ -f "$d/brief.md" ] || [ -f "$d/worktree" ] || continue
   status=$(cat "$d/status" 2>/dev/null || echo running); verdict=$(cat "$d/verdict" 2>/dev/null || echo none)
-  last_review=$(ls "$d"/review-*.md 2>/dev/null | sort -V | tail -1 || true)
+  last_review=$(ls "$d"/review-[0-9]*.md 2>/dev/null | sort -V | tail -1 || true)
   case "$status/$verdict" in
     green/approve)        next="ready to merge: factory/$id" ;;
     green/changes-needed) next="reviewer still has findings after the last round: ${last_review:-no review file}" ;;
@@ -2297,7 +2303,7 @@ if [ $tsv = 1 ]; then calls "$@"; exit 0; fi
 outcomes() {
   find "$@" -maxdepth 3 -name calls.log | sort | while read -r log; do
     d=$(dirname "$log")
-    cn=0; for f in "$d"/review-*.md; do [ -f "$f" ] && head -1 "$f" | grep -q '^VERDICT: changes-needed' && cn=$((cn + 1)); done
+    cn=0; for f in "$d"/review-[0-9]*.md; do [ -f "$f" ] && head -1 "$f" | grep -q '^VERDICT: changes-needed' && cn=$((cn + 1)); done
     printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$(dirname "$d")")" "$(basename "$d")" \
       "$(cat "$d/status" 2>/dev/null || echo -)" "$(cat "$d/verdict" 2>/dev/null || echo -)" "$cn"
   done
@@ -2436,6 +2442,272 @@ Keep whichever wins on cost per passed task.
 
 ---
 
+## Module 10: Review and merge, where you stop typing git commands
+
+**Status:** built. The local forge is tested end to end with stubbed agents, and ran with real
+agents on a product task: picked in `bin/review`, sent back with remarks, reworked in the
+implementer's session two days later, and through the AI review's fix loop. That run found that
+the reviewer didn't see your remarks (fixed below). The GitHub forge is tested with a stubbed
+`gh` and a local bare repo as the remote, not yet against GitHub (`docs/todo.md`).
+The scripts are in the repo, not copied here: `bin/forge`, `bin/rework`, `bin/review`,
+`forges/`, and the changes to `bin/run-task`, `bin/fan-out`, `bin/collect`, `bin/metrics` and
+`bin/start`. The contract is `docs/forge/forge-contract.md`.
+
+**Goal:** you review a finished task in one place, and the factory does the rest. On a local
+product that place is `bin/review`; on a product hosted on a forge (GitHub, later GitLab or
+Bitbucket) it is the forge's pull request. You either approve, and the branch is merged, `main`
+is verified and the worktree and branch are cleaned up; or you write remarks, and the implementer
+reworks the same branch, in the same session, until you approve. Until now this meant visiting
+the product, running `git diff`, rebasing, merging and removing worktrees by hand, and there was
+no way to send your remarks back at all: the only path was rewriting the task file and starting
+over (Module 7, orchestrate step 4).
+
+**A task is ready for review** when it ended green / approve (Module 5) and the forge's `submit`
+has run: on a forge, that means the pull request exists; locally, the branch exists. You look at
+nothing before that point. After a rework, green is enough: you have reviewed the task before, so
+when the AI reviewer objects to what your remarks asked for, you decide, not the reviewer.
+
+### The flow
+
+```
+fan-out or bin/rework ─► run-task ─► green/approve ─► submit.sh ─► ready for review
+
+you review:  local: bin/review (summary, then the diff)   forge: the pull request
+  approve  ─► local: merge.sh        forge: you merge in the UI, bin/review sync sees "merged"
+           ─► verify main, remove the worktree and the branch
+  remarks  ─► local: $EDITOR         forge: "Request changes", picked up by bin/review sync
+           ─► user-review-N.md in the task's run dir
+           ─► bin/rework ─► run-task --rework ─► ... ─► submit.sh again ─► ready for review
+  re-queue ─► local: re-queue        forge: close the pull request
+           ─► the task file or the spec was wrong: orchestrate triages it (Module 7, step 4)
+```
+
+Remarks go to the branch by default. Where a remark belongs depends on where the defect is:
+
+| Your remark means | Where it goes | How |
+|---|---|---|
+| The code doesn't do what the task says, or does it badly (the usual case) | the branch | remarks → `bin/rework` |
+| The task file was wrong or missed a constraint | the task file, a `tasks: <id>: ...` commit on `main` | re-queue / close the PR → orchestrate |
+| The requirement itself changes | the spec, then re-plan the affected tasks | a planning session, not this tool |
+
+No skill sits between your remarks and the implementer: routing them is mechanical, and a model
+rewriting them for another model only loses detail. The implementer reads your words.
+
+### Build
+
+1. **`factory.properties`: which forge a product uses** (product contract, Step 6). A
+   `key=value` file at the product root; without it, the forge is `local`:
+   ```properties
+   # factory.properties (optional; the defaults are shown)
+   forge=local          # local | github
+   forge.remote=origin  # the remote that submit pushes to (not used by local)
+   ```
+   - Read from `main` (`git show main:factory.properties`), so a branch can't change where its
+     own pull request goes.
+   - **Parsed, never `source`d:** sourcing would run product-repo content as code on the host,
+     outside the sandbox, and agents write to the product repo. A strict parser accepts only
+     `key=value` lines, comments and blank lines, and rejects unknown keys and unknown forges.
+   - **No credentials or machine paths.** The product repo is shared between machines and
+     people; how this machine authenticates to the forge belongs to the machine (factory
+     contract): a `git push` and the forge's CLI that already work on the host.
+   - The product chooses a forge; it never provides one. Forge code runs on the host, so it
+     lives in the factory.
+   - **`bin/forge`** reads the file and runs the forge's scripts: `bin/forge name|remote
+     <product-dir>`, and `bin/forge <submit|status|remarks|merge> <product-dir> <task-run-dir>`.
+     Nothing else in the factory knows which forge a product uses. `fan-out` calls
+     `bin/forge name` before a batch, so a broken file stops it before anything runs.
+
+2. **The forge contract and `forges/<name>/`.** A new kind of plug-in, next to `adapters/` but
+   separate from it: adapters wrap harnesses, forges wrap git hosts. Everything specific to one
+   forge (CLI, API, auth checks) lives only in `forges/<name>/`, the same rule as `AGENTS.md`
+   rule 2 for harnesses. `docs/forge/forge-contract.md` defines four scripts, each taking
+   `<product-dir> <task-run-dir>` (the run dir holds `worktree`, `REPORT.md` and the reviews; the
+   task id is its basename):
+
+   | Script | Does | Prints | local | github |
+   |---|---|---|---|---|
+   | `submit.sh` | makes the task reviewable; idempotent, so a rework calls it again | the review's URL, or nothing | nothing to do | push `factory/<id>`, create or update the PR |
+   | `status.sh` | asks where the review stands | one of `unsubmitted` (not ready for you: running, red, or not approved before your first review), `pending`, `changes-requested`, `approved`, `merged`, `closed` | from the branch, the run's result and what `bin/review` recorded | the PR's state and reviews |
+   | `remarks.sh` | the remarks not processed yet, as Markdown | the remarks, or nothing | reads the file you wrote in `$EDITOR` | the newest "Request changes" review and its line comments (as `file:line`) |
+   | `merge.sh` | merges an approved task into `main` | nothing | rebase onto `main`, `merge --ff-only` | exits 3: you merge in the forge's UI |
+
+   Rules for every forge:
+   - Push only `factory/<id>`, and force only with an explicit lease
+     (`--force-with-lease=refs/heads/factory/<id>:<last pushed>`, empty the first time, so the
+     branch must not exist yet). Never touch `main`.
+   - `submit.sh` refuses when local `main` has commits the remote's `main` doesn't: the pull
+     request would include them. Push `main` first (the orchestrator commits task-file rewrites
+     there and never pushes).
+   - `submit.sh` refuses to push when the remote already has `factory/<id>` and this run dir has
+     no record of pushing it (`forge-state`): someone else, on another machine, runs a task with
+     the same id. It says so, and the two of you settle who runs it.
+   - `status.sh` reports on one task. Listing many is `bin/review status`'s job (item 5), so no
+     forge has to implement it.
+   - Only a decision to request changes produces remarks. Plain comments don't, so a discussion
+     on a pull request never starts an implementer.
+   - Record the last processed review in `$RUNDIR/forge-state`, so asking twice gives nothing
+     new. `forges/state.sh` gives every forge `state_get` and `state_set` for it.
+   - All forge calls run on the host. The forge's token is never in `config/sandbox-env`, and
+     the agents can't push anyway (the `git push` guard, Module 2).
+
+3. **`run-task --rework <worktree> <task-file> <run-dir> <remarks-file>`.** The same loop as a
+   first run, on new input: it saves the remarks as `user-review-N.md` (N counts your rounds),
+   then runs the implementer with them, verifies, fixes, escalates and has the result reviewed
+   (Modules 3 and 5). It reuses `work`, `head_ok` and `review`; it doesn't copy them.
+   - The implementer continues its session, so it remembers the task. `run-task` records which
+     worker ran last (`implementer` or `implementer-strong`) in the run dir; the rework continues
+     that one.
+   - The prompt: the user reviewed the change and asks for these changes; fix each one (don't
+     weaken the tests), answer the questions under a `Review answers` section in `REPORT.md`,
+     then the remarks verbatim.
+   - The AI reviewer gets your remarks too: its brief adds `User review: <files>`, and its role
+     says the remarks amend the task and win where they conflict with it. Without this, the
+     reviewer judges the reworked change against the original task file and has your change
+     reverted as unrequested scope.
+   - Remarks decide *what* the change does, the reviewer still judges *how*: a bug, test gap or
+     rule break in the code that carries out a remark is a finding like any other, and the
+     implementer fixes it while keeping the remark. Only when a remark itself causes a problem
+     does the reviewer name the remark in a finding and the implementer explain the conflict
+     under `Review answers`; you decide. Such a task comes back to you even though the reviewer
+     objects: `bin/review` labels it `[AI reviewer objects]`, and on a forge the pull request's
+     body starts with that warning.
+   - The AI review rounds keep counting (`review-4.md` after `review-3.md`). `status` and
+     `verdict` are removed when the rework starts (the task shows as running) and written with
+     its result; `calls.log` keeps every call.
+   - `run-task` also records the task file's path in `$RUNDIR/task`, so `bin/rework` needs only
+     the run dir.
+
+4. **`bin/rework <run-dir>...`**, the counterpart of `fan-out` for existing worktrees: for each
+   task, `remarks.sh`, then `run-task --rework` in the background (a lock in the run dir skips a
+   task whose rework is already running; no new remarks skips it too), wait for all, then
+   `submit.sh` for each one that ended green, even if the AI reviewer still objects (its last
+   review shows in `bin/review` and the pull request). The output goes to `rework-<n>.log`.
+   - The agents need the secrets, so it refuses to start unless it runs under `bin/start`
+     (which now exports `FACTORY_STARTED`), before taking any remarks. `bin/rework --check`
+     checks only that; `bin/review` uses it before you type remarks.
+   - If `run-task` fails before saving the remarks, they're kept as `remarks-unsent-<n>.md`: the
+     forge has already marked them as taken.
+   Red or `changes-needed` results are left for `collect` and orchestrate, as after `fan-out`.
+   `fan-out` calls `submit.sh` the same way after `run-task`, so a first run ends with a pull
+   request too.
+
+5. **`bin/review`**, three modes. All of them work only on **this machine's tasks**: a
+   `factory/<id>` branch in the local product repo with a run dir in `runs/` whose `worktree`
+   file points into `<product-dir>-wt/`. The local run dirs are the source of truth, never the
+   forge's list of branches or pull requests: when several people push to the same remote, their
+   `factory/*` branches and pull requests are theirs to review and run, and this machine never
+   sees them. A local `factory/<id>` branch without a run dir (deleted, or made by hand) is
+   listed as `no run dir` and never acted on.
+   - **`bin/review status [product-dir] [all | <id> | factory/<id>]`** (any forge, read-only;
+     default `all`): one line per task: id, `status.sh`'s answer, the run's status / verdict,
+     your review rounds so far, whether a rework is running, and the pull request's URL. It
+     calls `status.sh` once per task; with a handful of tasks that's fast enough, and it keeps
+     the forge contract to one task at a time.
+   - **`bin/review [product-dir]`** (local forge, interactive): lists the tasks ready for
+     review, using the `select` builtin. For the one you pick, it prints the `collect` summary
+     first (`bin/collect <task-run-dir>`, then the AI reviewer's last review), then the diff
+     (`git diff main...factory/<id>`) in your pager, then asks:
+     - **approve:** `merge.sh`, verify `main` in a detached worktree through `bin/sandbox --net
+       none` (orchestrate step 7), then remove the worktree and `git branch -d factory/<id>`. A
+       red `main` is reported with its `verify.log`. The product checkout must be clean and on
+       `main`. A worktree with changes besides `REPORT.md` is left in place, with its branch.
+     - **remarks:** opens `$VISUAL` or `$EDITOR` (default `vi`) on an empty file; what you save
+       becomes `remarks.pending.md`, which the local forge's `remarks.sh` hands over. Then it
+       starts `bin/rework` in the background and returns. An empty file sends nothing.
+     - **re-queue:** records `decision=closed` in `forge-state` and tells you to run orchestrate, which rewrites the task
+       file (the branch's work is kept as `abandoned.patch`).
+     - **skip.**
+
+     It doesn't force you to page through every file: a script can't know what you read. It
+     only offers *approve* after the diff has been shown.
+   - **`bin/review sync [product-dir]`** (any forge): for each of this machine's tasks,
+     `status.sh`, then:
+     - `changes-requested` with new remarks: `remarks.sh` → `bin/rework`, which pushes to the
+       same branch; `submit.sh` adds a comment "addressed in `<sha>`" with `REPORT.md`'s
+       `Review answers`;
+     - `merged`: on a forge, `git pull --ff-only <remote> main` (the checkout must be clean and on
+       `main`, or it says so and skips the verify); verify `main` once for all merged tasks; then
+       remove each worktree and branch. A squashed or merge-committed branch isn't an ancestor of
+       `main`, so on a forge the branch is deleted with `-D`, but only after `status.sh` said
+       `merged`. On the local forge, `merged` means you merged by hand; `-d` is enough;
+     - `closed`: listed for orchestrate;
+     - a task still running: skipped;
+     - anything else: printed.
+
+     It exits 1 when something needs you: a red `main`, a `main` it couldn't update, or a
+     rework that couldn't start.
+
+     There are no webhooks to a local machine, so something has to run `sync`: you, or
+     orchestrate's loop. Later a host timer (cron, a systemd timer) can, which keeps it the same
+     for every harness.
+
+6. **`forges/github/`**, through the `gh` CLI on the host (`gh auth status` must succeed: factory
+   contract, Step 9). `lib.sh` sets `GH_REPO` (`HOST/OWNER/REPO`) from the remote's configured
+   URL, so `gh` works on the right repository whatever the current directory. The commands were
+   checked against the `gh` manual and GitHub's REST docs:
+   - `submit.sh`: always rebases onto `<remote>/main` first (simpler than detecting whether the
+     repository requires up-to-date branches; a conflict stops it, and nothing is pushed); pushes
+     with the lease; `gh pr create --base main --head factory/<id> --title "factory: <id>"
+     --body-file`, which prints the URL (the number is its last part), or `gh pr edit <n>
+     --body-file` when the PR exists. The body: `REPORT.md`, the AI reviewer's last review and
+     the usage line (`bin/metrics --summary`). `REPORT.md` stays out of the commit (Module 5),
+     so the body is where it shows. After a rework, `gh pr comment` "Addressed your review in
+     `<sha>`" with `REPORT.md`'s `Review answers`.
+   - `status.sh`: `gh pr view <n> --json state,reviewDecision`: `MERGED`, `CLOSED`; while open,
+     `changes-requested` if a `CHANGES_REQUESTED` review is newer than the last one taken
+     (`gh api --paginate repos/{owner}/{repo}/pulls/<n>/reviews`), else `approved` or `pending`.
+     It doesn't use `reviewDecision` for changes: GitHub keeps it at `CHANGES_REQUESTED` until
+     you review again, after the rework is done too.
+   - `remarks.sh`: each `CHANGES_REQUESTED` review not taken yet, its body
+     (`.../reviews/<id>`) and its line comments (`.../reviews/<id>/comments`, as
+     `` `path:line`: comment ``).
+   - Set up branch protection on `main` (require a pull request and an approving review). That
+     is the real guard: the factory's token can push branches, so it must not be able to merge
+     into `main` without you.
+
+   **API through a CLI, not MCP.** Pushing, opening a PR and fetching reviews are fixed steps;
+   through MCP each would be a model call (cost, delay, no guarantee it runs the same way twice),
+   configured differently in every harness, with the forge's write access handed to an agent.
+   GitLab would use `glab`; Bitbucket has no official full CLI, so `curl` on its REST API. Build
+   those when a product needs them: implement the four scripts, nothing else changes.
+
+7. **Skills.**
+   - **orchestrate:** step 6 (report) lists the tasks ready for review with their PR links, or
+     "run `bin/review`", instead of merge commands; step 7 (after the merge) becomes `bin/review
+     sync`. A new triage case: a task re-queued from `bin/review` or whose PR was closed. Read its
+     `user-review-*.md` and decide between the task file (rewrite and re-queue) and the spec (to
+     the user).
+   - **retro:** also reads `user-review-*.md` in the runs. Your remarks are about the product,
+     so a rework is **not** a factory-log line by itself. Retro decides per cause whether the fix
+     belongs to the product (`AGENTS.md`, spec, tests) or the factory (the reviewer missed it,
+     `plan` didn't ask), often both, and writes a log line, in factory terms, only for a factory
+     cause.
+
+**Also changed:** `bin/collect` takes a task run dir as well as a fan-out run, says "ready for
+your review" for green / approve, and shows the review's URL and a running rework.
+`bin/metrics --summary` prints the one-line usage that `collect` and pull requests show. The
+glob for AI reviews is `review-[0-9]*.md` everywhere, so `review-brief.md` never counts as one.
+Docs: the product contract (Step 6, `factory.properties`), the forge contract, `AGENTS.md`
+(forge specifics only in `forges/`), the factory contract (Step 9, forge sign-in),
+`operating-the-factory.md` (section 6, "Review and merge"), the run artifacts and the story →
+merge diagram in `how-the-factory-works.md`, the Module 0 tree and `bin/check-factory`
+(`forges/local`).
+
+### Harness-specific steps
+
+None. Nothing in this module calls a model except through `run-task`, which already works with
+every harness. Forge specifics live in `forges/<name>/`.
+
+**Try it:** locally, run a batch, approve one task in `bin/review` and send another back with a
+remark it can't miss (rename a function, add a test case). Check that the rework continued the
+implementer's session and that `user-review-1.md` is in the run dir. On GitHub, do the same from
+the pull request, then run `bin/review sync` twice: the second run must do nothing.
+
+**Done when:** a batch goes from `fan-out` to merged and cleaned up without a git command typed
+by you, including one round of your own remarks, on the local forge and on GitHub.
+
+---
+
 ## Order and pacing
 
 | Module | What you gain |
@@ -2448,6 +2720,7 @@ Keep whichever wins on cost per passed task.
 | 7 | An orchestrator, and a factory that improves itself |
 | 8 | Metrics: what each run cost and where the effort went |
 | 9 | Evals: routing and factory changes decided by numbers (postponed) |
+| 10 | Review and merge in one place, locally or on a forge, with your remarks sent back to the implementer |
 
 Adding another harness later means following the "harness-specific steps" of each module for it:
 an `adapters/<name>/Containerfile`, a guard wrapper, `adapters/<name>/run.sh` that meets the adapter contract, and

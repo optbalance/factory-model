@@ -12,7 +12,8 @@ to the product. Everything here lives in the **product** repo.
 | 3 | `scripts/verify` | `templates/verify` | always |
 | 4 | `docs/specs/` | — | always |
 | 5 | `toolchain.Containerfile` | `templates/toolchain.Containerfile` | with `SANDBOX=docker` (default) or `podman` |
-| 6 | Commit on `main` and check | — | always |
+| 6 | `factory.properties` | — | when you review on a forge such as GitHub |
+| 7 | Commit on `main` and check | — | always |
 
 ---
 
@@ -151,7 +152,37 @@ RUN printf '%s\n' 'allprojects { tasks.register("resolveAll") { doLast { configu
 WORKDIR /
 ```
 
-## Step 6. Commit on `main` and check
+## Step 6. `factory.properties` (optional)
+
+**What:** which forge you review and merge the product's tasks on. Without the file, it's
+`local`: you review in your terminal with the factory's `bin/review`, and it merges into `main`.
+
+```properties
+# factory.properties (the defaults are shown)
+forge=local          # local | github
+forge.remote=origin  # the remote the factory pushes task branches to (not used by local)
+```
+
+With `forge=github`, every task that passes verify and the AI review is pushed as
+`factory/<id>` and gets a pull request; you review, request changes or merge there. Also:
+
+- the host has the GitHub CLI (`gh`) signed in, and `git push` to the remote works (factory
+  contract);
+- protect `main` on GitHub: require a pull request and an approving review. That's the real
+  guard: the factory can push branches, so it must not be able to merge into `main` without you;
+- push `main` before a batch: a pull request is against the remote's `main`, and the factory
+  refuses to open one that would include commits only your local `main` has;
+- optionally, turn on "Automatically delete head branches" in the repository settings.
+
+Only these two keys. The file is read from `main` and parsed, never run, and never holds
+credentials or machine paths: it's shared by everyone who works on the product.
+
+**Why:** the factory has to know where a finished task goes for your review. The forge's code
+lives in the factory (`forges/<name>/`); the product only names it.
+
+**Template:** none.
+
+## Step 7. Commit on `main` and check
 
 **What:** commit everything above on `main`, then run from the factory:
 

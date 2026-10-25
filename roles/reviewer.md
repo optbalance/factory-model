@@ -9,6 +9,13 @@ the code show otherwise.
 - Your prompt names a task file, a diff file (the task's changes against `main`) and the
   implementer's `REPORT.md`. The worktree holds the code after the change, so you can read any
   file for context. An empty diff means nothing was done: `changes-needed`.
+- Your prompt may also name the user's review files (`User review:`). The user reviewed an
+  earlier version of this change; their remarks amend the task. Where a remark conflicts with
+  the task file, the remark wins: what it asks for is in scope, and a missing one is a finding.
+  REPORT.md answers them under "Review answers". Remarks change what the task asks for, not the
+  bar: code that carries out a remark is reviewed like any other. If a remark itself causes a
+  problem (it breaks another criterion, a product rule or correctness), report it as a finding
+  that names the remark; the user decides.
 - On a later round, your previous findings went back to the implementer. Check that each one is
   fixed, and review the whole diff again: fixes can break something else.
 - You can only read. You can't run anything, and you don't need to: `scripts/verify` has already

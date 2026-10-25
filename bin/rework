@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# usage: rework [--check] <task-run-dir>...
+# Sends your review remarks back to the implementers, in parallel. For each task: its forge's new
+# remarks (bin/forge remarks), then run-task --rework on its worktree; a task that ends green is
+# submitted again (bin/forge submit), even if the AI reviewer still objects: you reviewed it before,
+# so you decide. A task without new remarks, or with a rework
+# already running, is skipped. Run it through bin/start: the agents need the secrets.
+# --check only checks that, and exits.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+check=0; [ "${1:-}" = --check ] && { check=1; shift; }
+# before any remarks are taken: without the secrets every agent call fails
+[ -n "${FACTORY_STARTED:-}" ] || { echo "rework: start it through bin/start (bin/start bin/rework ..., or from a session started with bin/start)" >&2; exit 2; }
+[ $check = 1 ] && exit 0
+[ $# -ge 1 ] || { echo "usage: rework [--check] <task-run-dir>..." >&2; exit 2; }
+
+started=()
+for rd in "$@"; do
+  rd=$(cd "$rd" && pwd); id=$(basename "$rd")
+  wt=$(cat "$rd/worktree" 2>/dev/null || true)
+  [ -n "$wt" ] && [ -d "$wt" ] || { echo "rework: $id: no worktree (is $rd a task run dir?), skipped" >&2; continue; }
+  task=$(cat "$rd/task" 2>/dev/null || sed -n '1s/^Complete the task in \(.*\)\. Write REPORT.md.*/\1/p' "$rd/brief.md")
+  [ -n "$task" ] || { echo "rework: $id: can't tell its task file, skipped" >&2; continue; }
+  product=$(dirname "$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)")
+  mkdir "$rd/rework.lock" 2>/dev/null || { echo "rework: $id: a rework is already running, skipped" >&2; continue; }
+  if ! "$FACTORY_HOME/bin/forge" remarks "$product" "$rd" > "$rd/remarks.in.md"; then
+    echo "rework: $id: reading the remarks failed, skipped" >&2; rmdir "$rd/rework.lock"; continue
+  fi
+  if [ ! -s "$rd/remarks.in.md" ]; then
+    echo "rework: $id: no new remarks, skipped"; rm -f "$rd/remarks.in.md"; rmdir "$rd/rework.lock"; continue
+  fi
+  n=$(( $(ls "$rd"/user-review-*.md 2>/dev/null | wc -l || true) + 1 ))
+  # the forge has marked these remarks as taken: if run-task fails before saving them, keep them
+  ( trap '[ -f "$rd/user-review-$n.md" ] || mv "$rd/remarks.in.md" "$rd/remarks-unsent-$n.md"
+          rm -f "$rd/remarks.in.md"; rmdir "$rd/rework.lock"' EXIT
+    "$FACTORY_HOME/bin/run-task" --rework "$wt" "$task" "$rd" "$rd/remarks.in.md" || exit 0
+    if [ "$(cat "$rd/status")" = green ]; then
+      "$FACTORY_HOME/bin/forge" submit "$product" "$rd" || echo "rework: submit failed"
+    fi
+  ) > "$rd/rework-$n.log" 2>&1 &
+  echo "rework: started $id (round $n of your review; log: $rd/rework-$n.log)"
+  started+=("$rd")
+done
+wait
+for rd in "${started[@]}"; do
+  echo "rework: $(basename "$rd"): verify $(cat "$rd/status" 2>/dev/null || echo none), review $(cat "$rd/verdict" 2>/dev/null || echo none)"
+done

@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Run a planned spec's task files through the factory in batches (bin/fan-out, bin/collect), triage the results, and bring the user only merge-ready branches, questions and escalations. Use after the plan skill, in the product repo. Never merges.
+description: Run a planned spec's task files through the factory in batches (bin/fan-out, bin/collect), triage the results, and bring the user only tasks ready for review, questions and escalations; after the user's review, sync it (bin/review sync). Use after the plan skill, in the product repo. Never merges.
 ---
 
 # Orchestrate: from task files to merge-ready branches
@@ -11,8 +11,11 @@ read the results, fix what you can, and bring the user only what needs them. Wor
 repository's root, on `main`. `FACTORY_HOME` is the factory's directory; if it isn't set, stop and
 ask the user to start the session through the factory's `bin/start`.
 
-**You never merge, push or rebase.** The user merges. You may commit to `main` only edited task
-files (step 4), and append to `$FACTORY_HOME/docs/factory-log.md`.
+**You never merge, push or rebase yourself.** The user reviews and merges. The factory's scripts
+push task branches to the product's forge and merge what the user approves; you only run them.
+You may commit to `main` only edited task files (step 4), and append to
+`$FACTORY_HOME/docs/factory-log.md`. The product's forge is `"$FACTORY_HOME/bin/forge" name
+"$PWD"`: `local`, or a git host such as `github`.
 
 ## 1. Read the plan
 
@@ -22,11 +25,17 @@ Read the spec, its `docs/specs/NNN-name/tasks/*.md` (the frontmatter's `depends_
 - Every dependency change listed there must be on `main` already. If one isn't, stop and tell
   the user; no task runs before it lands.
 - Find each task's state:
-  - **merged:** `git log main --format=%s` has the line `factory: <id>`. A task merged another
+  - **merged:** no `factory/<id>` branch, and `git log main --format=%s` has a subject starting
+    with `factory: <id>` (a pull request squashed on a forge keeps that subject, plus ` (#<n>)`). A task merged another
     way won't show; ask the user about tasks that look done in the code.
-  - **waiting for the user:** a branch `factory/<id>` exists.
+  - **waiting for the user:** a branch `factory/<id>` exists. `"$FACTORY_HOME/bin/review" status`
+    shows where each one's review stands.
   - **to run:** everything else.
 - The product checkout must be clean and on `main`. If not, stop and say so.
+- On a forge other than `local`, `main` must also be pushed: a task's pull request is against
+  the remote's `main`, and the forge refuses to open one that would include local-only commits.
+  If `git rev-list --count <remote>/main..main` (after a fetch) isn't 0, ask the user to push
+  `main`; that includes your own task-file commits.
 
 ## 2. Build the next batch
 
@@ -58,19 +67,27 @@ finished; don't poll. Then:
 Read the `collect` output first, then the files it points to for the cases below. Open a run's
 `*.events.jsonl` only when nothing else explains what happened.
 
-- **green / approve:** read the review's minor notes and the report's decisions. Most notes are
-  style. A note that names a real gap (an acceptance criterion untested, a spec rule broken, a
-  case a later task must handle) goes to the user with the branch, together with where it should
-  be fixed: in this branch, or in a named later task file (edit it as below).
+- **green / approve:** it's ready for the user's review (on a forge, `collect` shows its pull
+  request; no `review:` line there means the submit failed: read the end of `run-task.log`). Read
+  the review's minor notes and the report's decisions. Most notes are style. A note that names a
+  real gap (an acceptance criterion untested, a spec rule broken, a case a later task must
+  handle) goes to the user with the task, together with where it should be fixed: in this branch
+  (the user sends it as a remark), or in a named later task file (edit it as below).
 - **green / changes-needed:** the reviewer still had findings after the last fix round. Read the
   last `review-<n>.md`. Bring it to the user with your judgment: merge as is, or rewrite the task
-  and re-queue.
+  and re-queue. After a rework (the run dir has `user-review-<n>.md`), the task is already back
+  in the user's review: the reviewer disagrees with the user's remarks, and the user decides.
 - **green / error:** the review itself failed. Read `run-task.log`. Bring it to the user.
 - **red:** read the end of `verify.log` and `REPORT.md`. Decide the cause:
   - the task file was unclear, wrong or contradicted the code: rewrite it and re-queue;
   - it needs a dependency change: either rewrite the task so it doesn't, or bring the change to
     the user (it lands on `main` like any other dependency change, then the task is re-queued);
   - anything else (a hard problem, an environment failure, a broken `main`): bring it to the user.
+- **closed** (in `bin/review status`): the user re-queued it in `bin/review`, or closed its pull
+  request, because the task file or the spec was wrong. Read its `user-review-*.md` (and on a
+  forge, the pull request's last comments) to find out what. A wrong or incomplete task file:
+  rewrite it and re-queue, as below. A requirement that changes: bring it to the user, it's a
+  spec change.
 - **Open questions in a report:** answer them from the spec if you can. If the answer changes
   the work, put it in the task file as a constraint and re-queue; otherwise tell the user what
   you answered. Questions only the user can answer go to the user.
@@ -101,29 +118,27 @@ commit the factory repo.
 
 Show only:
 
-- **Ready to merge:** each branch, one line on what it does, and any real gap from step 4. Give
-  the commands; parallel branches share a base, so each is rebased onto the `main` that already
-  has the earlier ones:
-  ```bash
-  git -C "${PWD}-wt/<id>" rebase main && git merge --ff-only factory/<id>
-  ```
+- **Ready for review:** each task, one line on what it does, and any real gap from step 4. On the
+  local forge, the user reviews them with `"$FACTORY_HOME/bin/start" "$FACTORY_HOME/bin/review"` in the product
+  repo (approve merges and cleans up; remarks go back to the implementer). On a forge, give each
+  pull request's link: the user approves and merges there, or requests changes.
 - **Questions** only the user can answer, each with your proposed answer.
 - **Escalations:** what failed, why you think it failed, and what you suggest.
 - **Next:** the next batch, and what it waits for.
 
-## 7. After the user merges
+## 7. After the user's review
 
-When the user says the branches are merged:
+When the user says they reviewed:
 
-1. If more than one branch was merged, check `main` as a whole (each branch was verified alone):
+1. Sync. It reworks the tasks the user requested changes on (in the background of your shell
+   tool if it has a time limit, like `fan-out`), and for merged tasks updates `main`, verifies it
+   in an offline sandbox and removes their worktrees and branches:
    ```bash
-   wt="${PWD}-wt/main-check"; rd="$FACTORY_HOME/runs/main-check-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$rd"
-   git worktree add -q --detach "$wt" main
-   "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rd" -- scripts/verify > "$rd/verify.log" 2>&1; echo "verify exit $?"
-   git worktree remove --force "$wt"
+   "$FACTORY_HOME/bin/review" sync
    ```
-   If it fails, stop and show the user `verify.log`; don't start a batch on a red `main`.
-2. Clean up each merged task: if its worktree holds nothing but `REPORT.md` (a copy is in the run
-   dir), `git worktree remove --force` it, then `git branch -d factory/<id>`. `-d` refuses an
-   unmerged branch; if it does, tell the user instead of forcing it.
+   It acts only on this machine's tasks, never on other people's branches or pull requests. If it
+   says `main` is red or couldn't be updated, stop and show the user; don't start a batch on a
+   red `main`. A worktree it left in place (changes besides `REPORT.md`) goes to the user.
+2. Triage the reworked tasks with `bin/collect <task-run-dir>` as in step 4, and the `closed`
+   ones as in step 4. Report as in step 6.
 3. Go back to step 2 until every task is merged. Then tell the user the spec is done.

@@ -18,7 +18,12 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 | Run one role on any harness | `bin/agent-run <role> <workdir> <prompt-file> <run-dir>` | ✓ |
 | Implement one task, gated by verify | `bin/run-task <worktree> <task-file> <run-dir>` | ✓ |
 | Run a batch of tasks in parallel | `bin/fan-out <product-dir> <task-file>...` | ✓ |
-| Collect a run's results | `bin/collect [run-dir]` | ✓ |
+| Collect a run's results | `bin/collect [run-dir \| task-run-dir]` | ✓ |
+| Review a task, approve or send remarks (local forge) | `bin/start bin/review [product-dir]` | ✓ |
+| See where every task's review stands | `bin/review status [product-dir] [all \| <id>]` | ✓ |
+| Act on the forge's decisions: rework, clean up merged tasks | `bin/start bin/review sync [product-dir]` | ✓ (GitHub forge untested on GitHub) |
+| Send remarks back to the implementers | `bin/start bin/rework <task-run-dir>...` (`bin/review` calls it) | ✓ |
+| One forge operation (debugging) | `bin/forge <name\|remote> <product-dir>`, `bin/forge <submit\|status\|remarks\|merge> <product-dir> <task-run-dir>` | ✓ |
 | Run a spec's tasks to merge-ready branches | skill `orchestrate`, in a session started with `bin/start` in the product repo | ✓ |
 | Turn failures into factory fixes | skill `retro`, in a session started with `bin/start` in `~/factory-model` | ✓ |
 | Measure runs: cost, turns, fix rounds | `bin/metrics [--tsv] [dir...]` | ✓ |
@@ -92,17 +97,46 @@ bin/collect                  # the newest run; or bin/collect runs/<timestamp>
 ```
 
 `fan-out` creates `~/projects/<product>-wt/<id>` on branch `factory/<id>` for each task, runs
-them in parallel and writes to `runs/<timestamp>/<id>/`. `collect` shows per task what to do
-next: merge a green, approved branch; read `review-<n>.md` when the reviewer still has
-findings; read `verify.log` and `REPORT.md` for a red one. To re-run a task, remove its worktree
-and branch (step 6) first.
+them in parallel and writes to `runs/<timestamp>/<id>/`. A task that passes verify and the AI
+review is submitted to the product's forge (`factory.properties`, product contract Step 6): on
+GitHub it gets a pull request. `collect` shows per task what to do next: review a green,
+approved one; read `review-<n>.md` when the reviewer still has findings; read `verify.log` and
+`REPORT.md` for a red one. To re-run a task, remove its worktree and branch first (the
+orchestrate skill does this when it re-queues one).
 
-## 6. After a task is merged
+## 6. Review and merge
+
+Locally (`forge=local`, the default), from the product repo or with its path:
 
 ```bash
-git -C ~/projects/<product> worktree remove ~/projects/<product>-wt/<id>
-git -C ~/projects/<product> branch -d factory/<id>
+bin/start bin/review ~/projects/<product>
 ```
+
+Pick a task: it shows the `collect` summary and the AI review, then the diff. Then:
+
+- **approve:** rebases the branch onto `main`, fast-forwards `main`, verifies `main` in an
+  offline sandbox and removes the worktree and branch. The product checkout must be clean and on
+  `main`.
+- **remarks:** opens `$EDITOR`; what you write goes to the implementer, which reworks the same
+  branch in its own session, then verify and the AI review run again. It runs in the background;
+  the task comes back to the list when it's green, even if the AI reviewer objects to your
+  remarks; its review is shown, and you decide.
+- **re-queue:** the task file or the spec was wrong; the orchestrate skill rewrites it and runs
+  the task again.
+
+On GitHub (`forge=github`), review the pull request: approve and merge it, or "Request changes"
+(the review's text and line comments are the remarks; plain comments are ignored), or close it to
+re-queue. Then:
+
+```bash
+bin/start bin/review sync ~/projects/<product>      # reworks, and cleans up merged tasks
+bin/review status ~/projects/<product>              # one line per task, with its pull request
+```
+
+`sync` acts only on this machine's tasks (a `factory/<id>` branch with a run dir here), never on
+other people's branches or pull requests on the same remote. Run it after you review; the
+orchestrate skill also runs it. `bin/start` is needed when a rework may start: the agents need
+the secrets.
 
 Run logs stay in `runs/` (gitignored); delete old ones when you no longer need them.
 
