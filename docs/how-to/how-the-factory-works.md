@@ -178,7 +178,7 @@ sequenceDiagram
   Orch->>Orch: bin/collect, triage: answer questions, rewrite tasks, re-queue failures
   Orch->>You: tasks ready for review (bin/review, or their pull requests), questions, escalations
   loop until you approve
-    You->>Run: remarks (bin/review, or "Request changes" + bin/review sync)
+    You->>Run: remarks (bin/review, or a pull request review + bin/review sync)
     Run->>Impl: bin/rework: your remarks, in the implementer's own session
     Run->>Run: verify, AI review, submit again
   end

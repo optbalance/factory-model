@@ -85,7 +85,9 @@ Read the `collect` output first, then the files it points to for the cases below
   - anything else (a hard problem, an environment failure, a broken `main`): bring it to the user.
 - **closed** (in `bin/review status`): the user re-queued it in `bin/review`, or closed its pull
   request, because the task file or the spec was wrong. Read its `user-review-*.md` (and on a
-  forge, the pull request's last comments) to find out what. A wrong or incomplete task file:
+  forge, the pull request's last comments) to find out what. On a forge, `bin/review sync` has
+  removed the task's branch from the remote; if it said it couldn't, someone else pushed to it:
+  bring that to the user before re-queuing. A wrong or incomplete task file:
   rewrite it and re-queue, as below. A requirement that changes: bring it to the user, it's a
   spec change.
 - **Open questions in a report:** answer them from the spec if you can. If the answer changes
@@ -121,7 +123,8 @@ Show only:
 - **Ready for review:** each task, one line on what it does, and any real gap from step 4. On the
   local forge, the user reviews them with `"$FACTORY_HOME/bin/start" "$FACTORY_HOME/bin/review"` in the product
   repo (approve merges and cleans up; remarks go back to the implementer). On a forge, give each
-  pull request's link: the user approves and merges there, or requests changes.
+  pull request's link: the user merges there, or sends remarks as a review (any submitted
+  review that isn't an approval; conversation comments don't count).
 - **Questions** only the user can answer, each with your proposed answer.
 - **Escalations:** what failed, why you think it failed, and what you suggest.
 - **Next:** the next batch, and what it waits for.

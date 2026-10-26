@@ -143,7 +143,7 @@ factory-model/
 │           └── guard.sh
 ├── forges/                    # where tasks are reviewed and merged (Module 10)
 │   ├── state.sh               # per-task forge state, sourced by the forge scripts
-│   ├── local/                 # submit.sh, status.sh, remarks.sh, merge.sh: review in bin/review
+│   ├── local/                 # submit.sh, status.sh, remarks.sh, merge.sh, discard.sh: review in bin/review
 │   └── github/                # the same four, through the gh CLI; lib.sh
 ├── templates/                 # task.md, product AGENTS.md, verify, toolchain.Containerfile (examples, copied by hand)
 ├── runs/                      # run logs (gitignored)
@@ -2475,7 +2475,7 @@ fan-out or bin/rework ─► run-task ─► green/approve ─► submit.sh ─�
 you review:  local: bin/review (summary, then the diff)   forge: the pull request
   approve  ─► local: merge.sh        forge: you merge in the UI, bin/review sync sees "merged"
            ─► verify main, remove the worktree and the branch
-  remarks  ─► local: $EDITOR         forge: "Request changes", picked up by bin/review sync
+  remarks  ─► local: $EDITOR         forge: a review (Comment or Request changes), bin/review sync
            ─► user-review-N.md in the task's run dir
            ─► bin/rework ─► run-task --rework ─► ... ─► submit.sh again ─► ready for review
   re-queue ─► local: re-queue        forge: close the pull request
@@ -2513,14 +2513,14 @@ rewriting them for another model only loses detail. The implementer reads your w
    - The product chooses a forge; it never provides one. Forge code runs on the host, so it
      lives in the factory.
    - **`bin/forge`** reads the file and runs the forge's scripts: `bin/forge name|remote
-     <product-dir>`, and `bin/forge <submit|status|remarks|merge> <product-dir> <task-run-dir>`.
+     <product-dir>`, and `bin/forge <submit|status|remarks|merge|discard> <product-dir> <task-run-dir>`.
      Nothing else in the factory knows which forge a product uses. `fan-out` calls
      `bin/forge name` before a batch, so a broken file stops it before anything runs.
 
 2. **The forge contract and `forges/<name>/`.** A new kind of plug-in, next to `adapters/` but
    separate from it: adapters wrap harnesses, forges wrap git hosts. Everything specific to one
    forge (CLI, API, auth checks) lives only in `forges/<name>/`, the same rule as `AGENTS.md`
-   rule 2 for harnesses. `docs/forge/forge-contract.md` defines four scripts, each taking
+   rule 2 for harnesses. `docs/forge/forge-contract.md` defines five scripts, each taking
    `<product-dir> <task-run-dir>` (the run dir holds `worktree`, `REPORT.md` and the reviews; the
    task id is its basename):
 
@@ -2528,8 +2528,9 @@ rewriting them for another model only loses detail. The implementer reads your w
    |---|---|---|---|---|
    | `submit.sh` | makes the task reviewable; idempotent, so a rework calls it again | the review's URL, or nothing | nothing to do | push `factory/<id>`, create or update the PR |
    | `status.sh` | asks where the review stands | one of `unsubmitted` (not ready for you: running, red, or not approved before your first review), `pending`, `changes-requested`, `approved`, `merged`, `closed` | from the branch, the run's result and what `bin/review` recorded | the PR's state and reviews |
-   | `remarks.sh` | the remarks not processed yet, as Markdown | the remarks, or nothing | reads the file you wrote in `$EDITOR` | the newest "Request changes" review and its line comments (as `file:line`) |
+   | `remarks.sh` | the remarks not processed yet, as Markdown | the remarks, or nothing | reads the file you wrote in `$EDITOR` | the reviews not taken yet ("Comment" or "Request changes") and their line comments (as `file:line`) |
    | `merge.sh` | merges an approved task into `main` | nothing | rebase onto `main`, `merge --ff-only` | exits 3: you merge in the forge's UI |
+   | `discard.sh` | frees a closed task's id for a re-queue | what it removed | nothing | deletes `factory/<id>` from the remote, with the lease of the last push |
 
    Rules for every forge:
    - Push only `factory/<id>`, and force only with an explicit lease
@@ -2543,8 +2544,12 @@ rewriting them for another model only loses detail. The implementer reads your w
      the same id. It says so, and the two of you settle who runs it.
    - `status.sh` reports on one task. Listing many is `bin/review status`'s job (item 5), so no
      forge has to implement it.
-   - Only a decision to request changes produces remarks. Plain comments don't, so a discussion
-     on a pull request never starts an implementer.
+   - Remarks are anyone's "Request changes", and the pull request author's "Comment". The
+     factory opens the pull request as you, and GitHub doesn't let you approve your own pull
+     request ("Pull request authors cannot approve their own pull requests") or, as far as we
+     know, request changes on it, so your "Comment" must count. Someone else's "Comment",
+     approvals and conversation comments are discussion, so a discussion on a pull request never
+     starts an implementer. On your own pull request, merging is the approval.
    - Record the last processed review in `$RUNDIR/forge-state`, so asking twice gives nothing
      new. `forges/state.sh` gives every forge `state_get` and `state_set` for it.
    - All forge calls run on the host. The forge's token is never in `config/sandbox-env`, and
@@ -2630,7 +2635,8 @@ rewriting them for another model only loses detail. The implementer reads your w
        remove each worktree and branch. A squashed or merge-committed branch isn't an ancestor of
        `main`, so on a forge the branch is deleted with `-D`, but only after `status.sh` said
        `merged`. On the local forge, `merged` means you merged by hand; `-d` is enough;
-     - `closed`: listed for orchestrate;
+     - `closed`: `discard.sh` (on GitHub it deletes the remote branch, so the id can be
+       re-queued and submitted again), then listed for orchestrate;
      - a task still running: skipped;
      - anything else: printed.
 
@@ -2654,22 +2660,24 @@ rewriting them for another model only loses detail. The implementer reads your w
      so the body is where it shows. After a rework, `gh pr comment` "Addressed your review in
      `<sha>`" with `REPORT.md`'s `Review answers`.
    - `status.sh`: `gh pr view <n> --json state,reviewDecision`: `MERGED`, `CLOSED`; while open,
-     `changes-requested` if a `CHANGES_REQUESTED` review is newer than the last one taken
+     `changes-requested` if a `CHANGES_REQUESTED` review, or a `COMMENTED` one by the pull
+     request's author (`gh pr view <n> --json author`), is newer than the last one taken
      (`gh api --paginate repos/{owner}/{repo}/pulls/<n>/reviews`), else `approved` or `pending`.
      It doesn't use `reviewDecision` for changes: GitHub keeps it at `CHANGES_REQUESTED` until
      you review again, after the rework is done too.
-   - `remarks.sh`: each `CHANGES_REQUESTED` review not taken yet, its body
+   - `remarks.sh`: each such review not taken yet, its body
      (`.../reviews/<id>`) and its line comments (`.../reviews/<id>/comments`, as
      `` `path:line`: comment ``).
-   - Set up branch protection on `main` (require a pull request and an approving review). That
-     is the real guard: the factory's token can push branches, so it must not be able to merge
-     into `main` without you.
+   - The guard on `main` is the factory's own: agents never get push credentials, and the
+     scripts push only `factory/<id>`. Branch protection (require a pull request) adds a guard
+     against a mistake in the scripts where the plan offers it; GitHub Free has none for private
+     repositories, and an approving review can't be required when you are the only reviewer.
 
    **API through a CLI, not MCP.** Pushing, opening a PR and fetching reviews are fixed steps;
    through MCP each would be a model call (cost, delay, no guarantee it runs the same way twice),
    configured differently in every harness, with the forge's write access handed to an agent.
    GitLab would use `glab`; Bitbucket has no official full CLI, so `curl` on its REST API. Build
-   those when a product needs them: implement the four scripts, nothing else changes.
+   those when a product needs them: implement the five scripts, nothing else changes.
 
 7. **Skills.**
    - **orchestrate:** step 6 (report) lists the tasks ready for review with their PR links, or

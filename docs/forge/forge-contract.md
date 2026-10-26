@@ -12,7 +12,7 @@ with every forge.
 | Step | What |
 |---|---|
 | 1 | How a forge is chosen and called |
-| 2 | The four scripts |
+| 2 | The five scripts |
 | 3 | State |
 | 4 | Rules |
 | 5 | Check |
@@ -47,7 +47,7 @@ id is the run dir's basename, the branch is `factory/<id>`, and the worktree's p
 `$RUNDIR/worktree`. `forges/state.sh` sets `id`, `branch` and `wt`, and gives `state_get`,
 `state_set` and `die`.
 
-## Step 2. The four scripts
+## Step 2. The five scripts
 
 | Script | Does | Prints | Exit |
 |---|---|---|---|
@@ -55,6 +55,7 @@ id is the run dir's basename, the branch is `factory/<id>`, and the worktree's p
 | `status.sh` | Asks where the review stands | one of `unsubmitted`, `pending`, `changes-requested`, `approved`, `merged`, `closed` | 0 |
 | `remarks.sh` | Takes the remarks not taken yet, and records them as taken | the remarks as Markdown, or nothing | 0 |
 | `merge.sh` | Merges an approved task into `main` | nothing | 0; 1 on a conflict (nothing merged); 3 when the forge merges in its own UI |
+| `discard.sh` | Frees a closed task's id for a re-queue: removes what `submit.sh` published (the remote branch), but only if it's still what this run pushed. Idempotent | what it removed, or nothing | 0, or 1 with the reason on stderr |
 
 `status.sh` values:
 
@@ -65,11 +66,14 @@ id is the run dir's basename, the branch is `factory/<id>`, and the worktree's p
 | `changes-requested` | You asked for changes, and their remarks haven't been taken yet | `bin/rework` |
 | `approved` | You approved, not merged yet | nothing |
 | `merged` | In `main` (on the forge: the pull request is merged) | update `main`, verify it, remove the worktree and branch |
-| `closed` | You re-queued it, or closed the pull request | leaves it to orchestrate |
+| `closed` | You re-queued it, or closed the pull request | `discard.sh`, then leaves it to orchestrate |
 
 `remarks.sh` output is what the implementer reads: your words, with line comments as
-`` `path:line`: comment ``. Only a decision to request changes produces remarks; plain comments
-and approvals never do, so a discussion never starts an implementer.
+`` `path:line`: comment ``. Remarks are a review that asks for changes (GitHub's "Request
+changes"), from anyone, or a plain review (GitHub's "Comment") from the pull request's author:
+the factory opens the pull request as you, and a forge may not let you request changes on your
+own. Someone else's plain review, approvals and conversation comments are discussion, so they
+never start an implementer.
 
 `status.sh` reports on one task. Listing many is `bin/review status`'s job, so no forge
 implements it.
@@ -82,7 +86,7 @@ A forge keeps what it needs between calls in `$RUNDIR/forge-state`, `key=value` 
 | Key | Forge | Meaning |
 |---|---|---|
 | `decision` | local | `closed` after a re-queue in `bin/review` |
-| `pushed` | github | the commit this run last pushed; the lease for the next push |
+| `pushed` | github | the commit this run last pushed; the lease for the next push, and for `discard.sh`, which empties it |
 | `pr`, `url` | github | the pull request |
 | `remarks` | github | the newest review whose remarks were taken |
 | `answered` | github | how many `user-review-<n>.md` the pull request has been told about |
@@ -97,8 +101,9 @@ remarks.
 - **Push only `factory/<id>`, and only with an explicit lease**
   (`--force-with-lease=refs/heads/factory/<id>:<last pushed>`, empty the first time). Never
   touch `main`.
-- **Never push another machine's branch.** If the remote already has `factory/<id>` and
-  `forge-state` has no `pushed`, someone else runs a task with this id: `submit.sh` refuses.
+- **Never push or delete another machine's branch.** If the remote already has `factory/<id>`
+  and `forge-state` has no `pushed`, someone else runs a task with this id: `submit.sh` refuses.
+  `discard.sh` deletes with the same lease, so a branch someone else pushed to stays.
 - **Never include unpushed commits from `main`.** A review against the remote's `main` would
   show them; `submit.sh` refuses until `main` is pushed.
 - **Remarks count once.** After `remarks.sh` takes them, `status.sh` no longer says
@@ -117,8 +122,10 @@ calls:
 1. `bin/forge name` reads `factory.properties` from `main`, and stops on an unknown key or forge.
 2. `submit.sh` pushes and opens the review; a second call updates it; a branch someone else
    pushed is refused; unpushed `main` commits are refused.
-3. `status.sh` gives `changes-requested` once per request; `remarks.sh` prints the remarks, then
-   nothing.
+3. `status.sh` gives `changes-requested` once per request, and not for discussion (someone
+   else's plain review); `remarks.sh` prints the remarks, then nothing.
 4. `bin/review sync` reworks, then on `merged` updates `main`, verifies it and removes the
    worktree and branch.
-5. Then once against the real forge, with a test repository.
+5. On `closed`, `bin/review sync` runs `discard.sh`; a re-queued run of the same id can then
+   submit again.
+6. Then once against the real forge, with a test repository.

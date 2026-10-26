@@ -69,7 +69,7 @@ status)
   ;;
 
 sync)
-  merged=(); rework=()
+  merged=(); rework=(); red=0
   while IFS=$'\t' read -r id rd; do
     [ -n "$rd" ] || { echo "review: $id: no run dir on this machine, not touched"; continue; }
     running "$rd" && { echo "review: $id: running"; continue; }
@@ -77,11 +77,12 @@ sync)
     case "$st" in
       changes-requested) rework+=("$rd") ;;
       merged)            merged+=("$id") ;;
-      closed)            echo "review: $id: closed; the orchestrate skill triages it (task file or spec)" ;;
+      error)             echo "review: $id: asking the forge failed; see why with: bin/forge status $P $rd" >&2; red=1 ;;
+      closed)            "$FACTORY_HOME/bin/forge" discard "$P" "$rd" || red=1
+                         echo "review: $id: closed; the orchestrate skill triages it (task file or spec)" ;;
       *)                 echo "review: $id: $st" ;;
     esac
   done < <(tasks)
-  red=0
   if [ ${#merged[@]} -gt 0 ]; then
     if [ "$forge" != local ]; then                       # merged on the forge: bring main up to date
       remote=$("$FACTORY_HOME/bin/forge" remote "$P")

@@ -124,16 +124,21 @@ Pick a task: it shows the `collect` summary and the AI review, then the diff. Th
 - **re-queue:** the task file or the spec was wrong; the orchestrate skill rewrites it and runs
   the task again.
 
-On GitHub (`forge=github`), review the pull request: approve and merge it, or "Request changes"
-(the review's text and line comments are the remarks; plain comments are ignored), or close it to
-re-queue. Then:
+On GitHub (`forge=github`), review the pull request: merge it, or send remarks as a review
+("Review changes" → "Comment"; the review's text and line comments are the remarks), or close it
+to re-queue. The pull request is opened as you, and GitHub doesn't let you approve or request
+changes on your own, so "Comment" is how you send remarks. A colleague sends them with "Request
+changes"; their "Comment", approvals and conversation comments are discussion and start nothing.
+An approval doesn't merge or clean up anything: merging does. Then:
 
 ```bash
 bin/start bin/review sync ~/projects/<product>      # reworks, and cleans up merged tasks
 bin/review status ~/projects/<product>              # one line per task, with its pull request
 ```
 
-`sync` acts only on this machine's tasks (a `factory/<id>` branch with a run dir here), never on
+For a closed pull request, `sync` removes the task's branch from the remote (only if nobody
+else pushed to it), so the task can be re-queued under the same id. `sync` acts only on this
+machine's tasks (a `factory/<id>` branch with a run dir here), never on
 other people's branches or pull requests on the same remote. Run it after you review; the
 orchestrate skill also runs it. `bin/start` is needed when a rework may start: the agents need
 the secrets.

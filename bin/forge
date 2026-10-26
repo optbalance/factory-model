@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # usage: forge name <product-dir>          the forge's name
 #        forge remote <product-dir>        the remote it pushes to
-#        forge <submit|status|remarks|merge> <product-dir> <task-run-dir>
+#        forge <submit|status|remarks|merge|discard> <product-dir> <task-run-dir>
 # Runs one operation of the product's forge (docs/forge/forge-contract.md). The forge is named in
 # the product's factory.properties, as committed on main; without the file it is `local`.
 set -euo pipefail
@@ -10,8 +10,8 @@ die() { echo "forge: $*" >&2; exit 2; }
 op=${1:-}
 case "$op" in
   name|remote) [ $# = 2 ] || die "usage: forge $op <product-dir>" ;;
-  submit|status|remarks|merge) [ $# = 3 ] || die "usage: forge $op <product-dir> <task-run-dir>" ;;
-  *) die "usage: forge <name|remote> <product-dir> | forge <submit|status|remarks|merge> <product-dir> <task-run-dir>" ;;
+  submit|status|remarks|merge|discard) [ $# = 3 ] || die "usage: forge $op <product-dir> <task-run-dir>" ;;
+  *) die "usage: forge <name|remote> <product-dir> | forge <submit|status|remarks|merge|discard> <product-dir> <task-run-dir>" ;;
 esac
 PRODUCT="$(cd "$2" && pwd)"
 

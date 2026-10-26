@@ -164,12 +164,20 @@ forge.remote=origin  # the remote the factory pushes task branches to (not used 
 ```
 
 With `forge=github`, every task that passes verify and the AI review is pushed as
-`factory/<id>` and gets a pull request; you review, request changes or merge there. Also:
+`factory/<id>` and gets a pull request, opened as you (your `git` and `gh` sign-in). GitHub
+doesn't let you approve or request changes on your own pull request, so you send remarks as a
+review: "Review changes" → "Comment", with line comments. Your "Comment" reviews and anyone's
+"Request changes" are remarks; a colleague's "Comment", approvals and conversation comments are
+discussion. Merging is your approval; closing the pull request sends the task back to be
+re-queued. Also:
 
 - the host has the GitHub CLI (`gh`) signed in, and `git push` to the remote works (factory
   contract);
-- protect `main` on GitHub: require a pull request and an approving review. That's the real
-  guard: the factory can push branches, so it must not be able to merge into `main` without you;
+- `main` is guarded by the factory itself: agents never get push credentials (they run in the
+  sandbox), and the factory's scripts push only `factory/<id>` branches. Branch protection on
+  `main` (require a pull request) adds a guard against a mistake in those scripts, where your
+  plan offers it: GitHub Free has none for private repositories. Don't require an approving
+  review when you are the only reviewer: nobody could give it;
 - push `main` before a batch: a pull request is against the remote's `main`, and the factory
   refuses to open one that would include commits only your local `main` has;
 - optionally, turn on "Automatically delete head branches" in the repository settings.

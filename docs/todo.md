@@ -73,13 +73,15 @@ when it's fixed.
 - **The GitHub forge has never run against GitHub.** `forges/github/` (Module 10,
   `docs/forge/forge-contract.md`) was tested only with a stub `gh` and a local bare repo as the
   remote; `gh` isn't installed on the host yet. The `gh` commands follow its manual and GitHub's
-  REST docs, but these are unverified: that the review list's `state` is `CHANGES_REQUESTED` for
-  "Request changes", that `GH_REPO` with a host part works for `gh api`'s `{owner}/{repo}`, and how
-  `gh pr create` behaves when a closed pull request already exists for the branch. What goes wrong
-  if one is off: `bin/review sync` never sees your requested changes, or `submit` fails after the
-  push. Test it with a throwaway GitHub repository: install `gh`, `gh auth login`, add
-  `factory.properties` with `forge=github`, then follow Module 10's "Try it", including a
-  squash merge and running `bin/review sync` twice.
+  REST docs, but these are unverified: that the review list's `state` is `COMMENTED` for a
+  "Comment" review and `CHANGES_REQUESTED` for "Request changes", that GitHub also refuses
+  "Request changes" on your own pull request (its docs say so only for approving), that
+  `GH_REPO` with a host part works for `gh api`'s `{owner}/{repo}`, and how `gh pr create`
+  behaves when a closed pull request already exists for the branch. What goes wrong if one is
+  off: `bin/review sync` never sees your remarks, or `submit` fails after the push. Test it with
+  a throwaway GitHub repository, or with a real task: install `gh`, `gh auth login`, add
+  `factory.properties` with `forge=github`, then follow Module 10's "Try it", including a squash
+  merge and running `bin/review sync` twice.
 - **`run-task --rework`'s handling of your remarks against the AI reviewer is untested with real
   agents.** One real rework ran (shovel task 005, before the fix): the implementer applied the
   remark and wrote `Review answers`, then the reviewer, who didn't see the remarks, had it
@@ -88,3 +90,42 @@ when it's fixed.
   `bin/agent-run` only. Check on the next real remark: the reviewer no longer flags the remark as
   scope, bugs in the remark's code are still fixed, and a genuine conflict ends as
   `[AI reviewer objects]` with the conflict under `Review answers`.
+- **Unclear remarks make the implementer guess.** A remark that slips through incomplete or
+  vague, as your own "Comment" or a colleague's "Request changes" ("Main:71 Why is it here?",
+  "if while {…figure out something better…}"), goes to the implementer as is. The rework prompt
+  (`bin/run-task`, `rework-<n>.md`: "Fix each one…") pushes it to act, so it invents a change
+  you didn't ask for (removes the code you only asked about, rewrites beyond the spot). The
+  reviewer role (`roles/reviewer.md`) makes it worse: a remark not carried out is a finding, so
+  holding back gets pushed into guessing. And a question back to you is hidden locally:
+  `bin/collect` (shown by `bin/review`) prints only "Not done" and "Open questions", not
+  "Review answers"; on GitHub the PR comment shows it, titled "Addressed your review" even when
+  nothing changed (`forges/github/submit.sh`). Possible fix, prompt-level only (no remark
+  pre-check step or agent): (1) the rework prompt acts on a remark only when the implementer can
+  say in one sentence what you want and the change stays where the remark points: a clear
+  change is made; a question is answered under "Review answers" with no code change (a defect
+  it reveals is proposed, not fixed); an open-ended remark at a spot gets one concrete change
+  there, with why; an unclear, cut-off or contradictory one gets no change, a quote and a
+  question, with options. (2) The reviewer role: a remark answered as a question, or asked
+  about as unclear, isn't a finding, unless it was clear, or a question got an unasked-for code
+  change. (3) `bin/collect` prints "Review answers" when the run dir has `user-review-*.md`; the
+  PR comment says "Answered your review in <sha>". Test with real agents: send one vague remark
+  next to a real one.
+- **Prompt text lives inside `bin/run-task`.** The messages the runner sends to agents are
+  `printf` strings in the script: the task brief (lines ~17-18), the verify fix prompt (~38),
+  the reviewer's brief and its round and `User review:` lines (~56-58), the rework prompt (~75),
+  the review fix prompt and the user-remarks rule (~88-90). Role prompts already live in
+  `roles/*.md`; these don't. What goes wrong: prompts are the part of the factory tuned most
+  often (the last three fixes were wording), yet each change edits bash with `'"'"'` quoting, a
+  prompt can't be read or diffed as a whole, and retro or a later eval (Module 9) can't point at
+  "the rework prompt" as one file. Possible fix: a `prompts/` directory next to `roles/`, one file
+  per message, named by when it's sent: `implement.md`, `verify-fix.md`, `review.md`,
+  `review-round.md`, `review-user.md`, `review-fix.md`, `review-fix-user.md`, `rework.md`.
+  Conditional parts become their own files that the script appends, so the files hold no logic.
+  Placeholders like `{task}`, `{round}`, `{user_reviews}` are filled with bash's
+  `${text//\{task\}/$task}`, not `sed` or `envsubst` (`envsubst` isn't a host tool in the
+  factory contract, and `sed` breaks on `/` and `&` in values). Dynamic content (verify output,
+  the reviewer's findings, your remarks) is appended after the file, as now. `bin/run-task`
+  keeps only the plumbing; `bin/check-factory` checks the files exist; Module 3 and 5's code
+  listings in `docs/how-to/building-the-factory.md` and the course text that quotes prompts are
+  updated. Out of scope: guard block messages (`guards/`, tied to their checks) and texts for
+  you, not agents (PR body and comment, `bin/collect`).

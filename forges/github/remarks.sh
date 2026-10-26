@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# GitHub forge: the "Request changes" reviews not taken yet, with their line comments, as
-# Markdown; then records them as taken. Plain comments and approvals are never remarks.
+# GitHub forge: the reviews with remarks not taken yet (lib.sh), with their line comments, as
+# Markdown; then records them as taken. Plain conversation comments and approvals are never remarks.
 set -euo pipefail
 . "$FACTORY_HOME/forges/state.sh"; . "$(dirname "$0")/lib.sh"
 [ -n "$pr" ] || exit 0
-ids=$(changes_requested "$(state_get remarks)")
+ids=$(remark_reviews "$(state_get remarks)")
 [ -n "$ids" ] || exit 0
 for r in $ids; do
   printf '## Review %s\n\n' "$r"
