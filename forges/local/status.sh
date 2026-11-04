@@ -3,10 +3,13 @@
 set -euo pipefail
 . "$FACTORY_HOME/forges/state.sh"
 [ -f "$RUNDIR/status" ] || { echo unsubmitted; exit 0; }          # still running
-# merged: main contains the branch, and the branch holds the task's commit (a branch with no
-# commits of its own, such as a red task's, is also contained in main)
-if git -C "$PRODUCT" merge-base --is-ancestor "$branch" main 2>/dev/null \
-   && git -C "$PRODUCT" log -1 --format=%s "$branch" | grep -q "^factory: $id\b"; then echo merged
+# merged: main contains the squash commit merge.sh made, or you merged the branch by hand and it
+# holds the task's commit (a branch with no commits of its own, such as a red task's, is also
+# contained in main)
+c=$(state_get merged)
+if { [ -n "$c" ] && git -C "$PRODUCT" merge-base --is-ancestor "$c" main 2>/dev/null; } \
+   || { git -C "$PRODUCT" merge-base --is-ancestor "$branch" main 2>/dev/null \
+        && git -C "$PRODUCT" log -1 --format=%s "$branch" | grep -q "^factory: $id\b"; }; then echo merged
 elif [ "$(state_get decision)" = closed ]; then echo closed
 elif [ -s "$RUNDIR/remarks.pending.md" ]; then echo changes-requested
 elif [ "$(cat "$RUNDIR/status")" = green ] && { [ "$(cat "$RUNDIR/verdict" 2>/dev/null)" = approve ] \

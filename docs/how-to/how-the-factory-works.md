@@ -24,8 +24,8 @@ The big picture in diagrams: which directories exist, where things run, and what
 └── .git/                        the product's history, shared by all of its worktrees
 
 ~/projects/<product>-wt/         THE WORKTREES: one checkout per task in progress
-├── 012-csv-export/              branch factory/012-csv-export
-└── 013-date-filter/             branch factory/013-date-filter
+├── 004-02-csv-export/           branch factory/004-02-csv-export
+└── 004-03-date-filter/          branch factory/004-03-date-filter
 ```
 
 **The worktrees directory** is the one that's easy to forget. A *git worktree* is an extra

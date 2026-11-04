@@ -84,6 +84,17 @@ git doesn't track empty directories.
 **Why:** specs and task files, the factory's work orders, are written here and committed on `main`
 so every worktree has its own copy.
 
+The factory's `spec` and `plan` skills name what they write; don't number files there by hand:
+
+```
+docs/specs/004-reporting.md                       spec NNN-name: the next free number
+docs/specs/004-reporting/dependencies.md          the dependency changes it needs
+docs/specs/004-reporting/tasks/004-02-csv-export.md    task NNN-TT-name: its id and branch factory/<id>
+```
+
+Other files in `docs/specs/` (your own docs) are fine: the skills count only `NNN-*` names. Each
+task reaches `main` as one commit, `factory: <id>`.
+
 **Template:** none.
 
 ## Step 5. `toolchain.Containerfile`

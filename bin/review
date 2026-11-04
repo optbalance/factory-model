@@ -40,8 +40,8 @@ verify_main() {
   if [ $r = 0 ]; then echo "review: main verified"; else echo "review: main is RED after the merge, don't start a batch: $rd/verify.log" >&2; fi
   return $r
 }
-# cleanup <id> <-d|-D>: remove a merged task's worktree (if it holds nothing but REPORT.md, whose
-# copy is in the run dir) and its branch
+# cleanup <id>: remove a merged task's worktree (if it holds nothing but REPORT.md, whose copy is
+# in the run dir) and its branch, which isn't an ancestor of main: every forge squashes it
 cleanup() {
   local wt="$P-wt/$1"
   if [ -d "$wt" ]; then
@@ -50,7 +50,7 @@ cleanup() {
     fi
     git -C "$P" worktree remove --force "$wt"
   fi
-  git -C "$P" branch -q "$2" "factory/$1" && echo "review: $1: merged, worktree and branch removed"
+  git -C "$P" branch -q -D "factory/$1" && echo "review: $1: merged, worktree and branch removed"
 }
 
 case "$mode" in
@@ -93,10 +93,7 @@ sync)
       fi
     fi
     [ $red = 1 ] || verify_main || red=1
-    for id in "${merged[@]}"; do
-      if [ "$forge" = local ]; then cleanup "$id" -d
-      else cleanup "$id" -D; fi                          # squashed or merge-committed: not an ancestor of main
-    done
+    for id in "${merged[@]}"; do cleanup "$id"; done
   fi
   if [ ${#rework[@]} -gt 0 ]; then
     "$FACTORY_HOME/bin/rework" --check && "$FACTORY_HOME/bin/rework" "${rework[@]}" || red=1
@@ -128,7 +125,7 @@ pick)
     select d in approve remarks re-queue skip; do [ -n "$d" ] && break; done
     case "$d" in
       approve)
-        if "$FACTORY_HOME/bin/forge" merge "$P" "$rd"; then verify_main || true; cleanup "$id" -d; fi ;;
+        if "$FACTORY_HOME/bin/forge" merge "$P" "$rd"; then verify_main || true; cleanup "$id"; fi ;;
       remarks)
         "$FACTORY_HOME/bin/rework" --check || continue
         f="$rd/remarks.edit.md"; : > "$f"

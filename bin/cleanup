@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# usage: cleanup <product-dir> <id>
+# Removes a task's worktree <product-dir>-wt/<id> and branch factory/<id>, so the id is free again.
+# Nothing is lost: when the branch or worktree holds any work (besides REPORT.md, whose copy is in
+# the run dir), its diff from where it branched off main is saved first as abandoned.patch in the
+# task's newest run dir; without a run dir to save it in, it refuses. Idempotent.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+die() { echo "cleanup: $*" >&2; exit 1; }
+[ $# = 2 ] || { echo "usage: cleanup <product-dir> <id>" >&2; exit 2; }
+P=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || die "$1 is not a git repo"
+P=$(dirname "$P"); id=${2#factory/}; wt="$P-wt/$id"; branch="factory/$id"
+rd=""                                                  # the newest run dir of this worktree
+while read -r f; do [ "$(cat "$f")" = "$wt" ] && rd=$(dirname "$f"); done \
+  < <(ls -d "$FACTORY_HOME"/runs/*/"$id"/worktree 2>/dev/null | sort)
+
+if [ -d "$wt" ]; then
+  git -C "$wt" add -A -- . ':(top,exclude)REPORT.md'
+  base=$(git -C "$wt" merge-base main HEAD)
+  if ! git -C "$wt" diff --cached --quiet "$base"; then
+    [ -n "$rd" ] || die "$wt holds work and has no run dir to save it in; left in place"
+    git -C "$wt" diff --cached "$base" > "$rd/abandoned.patch"
+    echo "cleanup: $id: its work saved to $rd/abandoned.patch"
+  fi
+  git -C "$P" worktree remove --force "$wt"
+  echo "cleanup: $id: worktree $wt removed"
+fi
+git -C "$P" worktree prune
+if git -C "$P" show-ref --verify -q "refs/heads/$branch"; then
+  git -C "$P" branch -q -D "$branch"; echo "cleanup: $id: branch $branch removed"
+fi

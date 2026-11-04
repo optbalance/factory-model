@@ -114,8 +114,9 @@ bin/start bin/review ~/projects/<product>
 
 Pick a task: it shows the `collect` summary and the AI review, then the diff. Then:
 
-- **approve:** rebases the branch onto `main`, fast-forwards `main`, verifies `main` in an
-  offline sandbox and removes the worktree and branch. The product checkout must be clean and on
+- **approve:** rebases the branch onto `main` and adds it to `main` as one commit,
+  `factory: <id>` (like a squash merge on a forge), verifies `main` in an offline sandbox and
+  removes the worktree and branch. The product checkout must be clean and on
   `main`.
 - **remarks:** opens `$EDITOR`; what you write goes to the implementer, which reworks the same
   branch in its own session, then verify and the AI review run again. It runs in the background;

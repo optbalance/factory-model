@@ -19,9 +19,12 @@ product=$(basename "$(dirname "$common")"); product=${product,,}; product=${prod
 image="${SANDBOX_IMAGE:-factory-worker-$product}"
 
 # env allowlist: config/sandbox-env + what the factory scripts themselves need
+# Values come from the environment, else from the factory's secrets file (bin/lib/env.sh).
+. "$FACTORY_HOME/bin/lib/env.sh"
 mapfile -t names < <(grep -Ev '^[[:space:]]*(#|$)' "$FACTORY_HOME/config/sandbox-env")
+factory_env_load "${names[@]}"
 for n in "${names[@]}"; do   # a warning, not an error: some names are optional (HTTPS_PROXY)
-  [ -n "${!n:-}" ] || echo "sandbox: $n (config/sandbox-env) is not set; start the orchestrator with bin/start, or the harness may fail to authenticate" >&2
+  [ -n "${!n:-}" ] || echo "sandbox: $n (config/sandbox-env) is set neither in the environment nor in $factory_env; the harness may fail to authenticate" >&2
 done
 names+=(FACTORY_HOME CONTINUE)
 

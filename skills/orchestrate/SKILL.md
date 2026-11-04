@@ -96,12 +96,11 @@ Read the `collect` output first, then the files it points to for the cases below
 
 **Rewriting a task file:** change only what caused the failure, keep its id, and commit it
 alone on `main` with the message `tasks: <id>: <what changed>`. Before re-queuing, keep the
-failed attempt's work and remove its worktree and branch, or `fan-out` refuses the task:
+failed attempt's work and remove its worktree and branch, or `fan-out` refuses the task. The
+cleanup script does both (the work goes to the run dir's `abandoned.patch`):
 
 ```bash
-wt="${PWD}-wt/<id>"; rd=<the task's run dir>
-git -C "$wt" add -A && git -C "$wt" diff --cached main > "$rd/abandoned.patch"
-git worktree remove --force "$wt" && git branch -D factory/<id>
+"$FACTORY_HOME/bin/cleanup" "$PWD" <id>
 ```
 
 Re-queue a task at most once on your own. If it fails again, it goes to the user.

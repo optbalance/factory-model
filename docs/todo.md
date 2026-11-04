@@ -129,3 +129,70 @@ when it's fixed.
   listings in `docs/how-to/building-the-factory.md` and the course text that quotes prompts are
   updated. Out of scope: guard block messages (`guards/`, tied to their checks) and texts for
   you, not agents (PR body and comment, `bin/collect`).
+- **Cleanup of a task's worktree and branch is done in several places, and not at all after a
+  false start.** `bin/cleanup <product-dir> <id>` (added 2026-10-28) is the one way to free a
+  task id: it saves any work on the branch or in the worktree (besides `REPORT.md`) as
+  `abandoned.patch` in the task's newest run dir, then removes `<product>-wt/<id>` and
+  `factory/<id>`; it refuses when there is work and no run dir. So far only the orchestrate skill's
+  re-queue step uses it. Every other place that frees a task must call it instead of its own git
+  commands, so the rules (what's kept, where, when to refuse) live in one script:
+  - **False start.** When the implementer's harness call fails before doing any work (shovel 004,
+    005 on 2026-10-23 and 007 on 2026-10-28: authentication failed at turn 1), `bin/run-task`
+    ignores the failure (`run ... || true` in `call()`), `scripts/verify` passes on the unchanged
+    `main`, and the run ends `green` with review `error`; the branch and worktree stay, and
+    `bin/fan-out` refuses the task until someone removes them. Fix: `adapters/claude/run.sh` exits
+    non-zero when the result has `is_error: true` (add it to `docs/adapter/adapter-contract.md`);
+    `bin/run-task` ends with status `not-started` when the first implementer call fails and the
+    worktree is unchanged, skipping verify and review; `bin/fan-out`, which created the worktree
+    and branch, calls `bin/cleanup` for that status; `bin/collect` shows `not-started` with the end
+    of the implementer's events log; the orchestrate skill re-queues it without asking.
+  - **After review (merged).** `bin/review`'s own `cleanup()` (worktree remove, then `branch -d`
+    or `-D`; leaves the worktree when it has changes besides `REPORT.md`) becomes a call to
+    `bin/cleanup`. Its "left in place" case is then `bin/cleanup` saving the changes to
+    `abandoned.patch` instead; decide whether a merged task's leftover changes should still stop
+    and go to the user.
+  - **Discard (closed / re-queued in review).** `docs/forge/forge-contract.md`'s `discard.sh`
+    removes only what the forge published; the local branch and worktree are left "for the
+    orchestrate skill". `bin/review sync` calls `bin/cleanup` after a successful `discard.sh`, so
+    a closed task is freed in one step, with its work kept in the run dir.
+  - **Any new path that frees a task** (a cancelled batch, an abandoned rework) uses `bin/cleanup`.
+  Also: the run-dir lookup (newest `runs/*/<id>/worktree` naming the worktree) is now in both
+  `bin/cleanup` and `bin/review`'s `tasks()`; move it into one helper when wiring `bin/review`.
+- **`bin/fan-out` starts a batch without the harness credentials.** Since 2026-10-28 `bin/sandbox`
+  reads any `config/sandbox-env` name missing from the environment from `$FACTORY_ENV`
+  (`bin/lib/env.sh`), because Claude Code doesn't pass `CLAUDE_CODE_OAUTH_TOKEN` to its Bash tool's
+  shells (that caused the 004, 005 and 007 false starts). A name missing from both still only
+  warns, and the batch runs into a false start. Possible fix: `bin/fan-out` checks the required
+  names (a way to mark which are required in `config/sandbox-env`) before creating any worktree
+  and refuses to start (exit 2).
+- **`bin/` has outgrown separate bash scripts.** About 980 lines across 15 `bin/` scripts, the
+  forge scripts and the adapters (2026-10-28), and the same parts are repeated instead of shared:
+  - the `FACTORY_HOME` preamble in 11 scripts;
+  - finding the product's main checkout (`rev-parse --git-common-dir`) in `cleanup`, `review`,
+    `rework` and `sandbox`;
+  - the task's worktree path `<product>-wt/<id>` in `cleanup`, `fan-out` and `review`;
+  - the newest run dir of a task in `cleanup` and `review`;
+  - routing lookups through `jq` in `agent-run`, `build-worker`, `metrics` and the GitHub forge;
+  - the product name in `sandbox` and `build-worker` (see the image-collision bullet above).
+
+  What goes wrong: a rule changes in one copy and not the others (the cleanup bullet above is one
+  case), every new script copies the boilerplate again, and nothing is unit-tested, because bash
+  tests only run end to end. Fix: join the scripts into one CLI application (`factory <command>`:
+  `fan-out`, `collect`, `review`, `cleanup`, `sandbox`, ...) written in a platform-independent
+  language, with a typed model of product, task, run and worktree in one place, unit tests, and
+  the forge and adapter contracts as interfaces. Things to decide first:
+  - the language: a single static binary (Go) adds nothing the host must install, while Python
+    needs an interpreter on every host;
+  - what stays a script: anything that runs inside the worker image (`adapters/*/run.sh`, the
+    hooks in `guards/`) either stays bash or needs the CLI in the image;
+  - the forge and adapter contracts (`docs/forge/forge-contract.md`,
+    `docs/adapter/adapter-contract.md`) are defined as scripts per forge or harness, so decide
+    whether they stay as external scripts the CLI calls (keeping them pluggable) or become modules;
+  - `docs/how-to/building-the-factory.md` teaches each module through these bash listings and has
+    to be rewritten with them;
+  - "platform-independent" stops at the sandbox: docker, podman or bwrap and git worktrees still
+    mean Linux or macOS.
+
+  A cheaper step that can happen first, and that the rewrite reuses: move the repeated parts into
+  `bin/lib/` (started with `bin/lib/env.sh`), one helper per concept (product, task paths, run
+  dirs, routing).

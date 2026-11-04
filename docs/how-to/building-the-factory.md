@@ -702,9 +702,12 @@ product=$(basename "$(dirname "$common")"); product=${product,,}; product=${prod
 image="${SANDBOX_IMAGE:-factory-worker-$product}"
 
 # env allowlist: config/sandbox-env + what the factory scripts themselves need
+# Values come from the environment, else from the factory's secrets file (bin/lib/env.sh).
+. "$FACTORY_HOME/bin/lib/env.sh"
 mapfile -t names < <(grep -Ev '^[[:space:]]*(#|$)' "$FACTORY_HOME/config/sandbox-env")
+factory_env_load "${names[@]}"
 for n in "${names[@]}"; do   # a warning, not an error: some names are optional (HTTPS_PROXY)
-  [ -n "${!n:-}" ] || echo "sandbox: $n (config/sandbox-env) is not set; start the orchestrator with bin/start, or the harness may fail to authenticate" >&2
+  [ -n "${!n:-}" ] || echo "sandbox: $n (config/sandbox-env) is set neither in the environment nor in $factory_env; the harness may fail to authenticate" >&2
 done
 names+=(FACTORY_HOME CONTINUE)
 
@@ -1678,7 +1681,7 @@ agent can finish and verify on its own. Task files are the factory's work orders
 
 ```markdown
 ---
-id: 012-csv-export
+id: 004-02-csv-export
 spec: docs/specs/004-reporting.md
 depends_on: []
 touches: [src/reports/, src/api/export.ts]   # used to spot parallel conflicts
@@ -2169,7 +2172,7 @@ approvals and your guards are what protect you here.
 the model**, because failures often depend on them:
 
 ```
-2026-10-03 | 012-csv-export | implementer=claude/<model> | edited unrelated files | cause: task Context too vague | fix: plan skill now requires explicit `touches`
+2026-10-03 | 004-02-csv-export | implementer=claude/<model> | edited unrelated files | cause: task Context too vague | fix: plan skill now requires explicit `touches`
 ```
 
 Classify every failure and fix it in **the matching layer**:
@@ -2529,7 +2532,7 @@ rewriting them for another model only loses detail. The implementer reads your w
    | `submit.sh` | makes the task reviewable; idempotent, so a rework calls it again | the review's URL, or nothing | nothing to do | push `factory/<id>`, create or update the PR |
    | `status.sh` | asks where the review stands | one of `unsubmitted` (not ready for you: running, red, or not approved before your first review), `pending`, `changes-requested`, `approved`, `merged`, `closed` | from the branch, the run's result and what `bin/review` recorded | the PR's state and reviews |
    | `remarks.sh` | the remarks not processed yet, as Markdown | the remarks, or nothing | reads the file you wrote in `$EDITOR` | the reviews not taken yet ("Comment" or "Request changes") and their line comments (as `file:line`) |
-   | `merge.sh` | merges an approved task into `main` | nothing | rebase onto `main`, `merge --ff-only` | exits 3: you merge in the forge's UI |
+   | `merge.sh` | merges an approved task into `main` | nothing | rebase onto `main`, then one commit `factory: <id>` on `main` (a squash, as on a forge), recorded as `merged=<sha>` in `forge-state` | exits 3: you merge in the forge's UI |
    | `discard.sh` | frees a closed task's id for a re-queue | what it removed | nothing | deletes `factory/<id>` from the remote, with the lease of the last push |
 
    Rules for every forge:
@@ -2632,9 +2635,9 @@ rewriting them for another model only loses detail. The implementer reads your w
        `Review answers`;
      - `merged`: on a forge, `git pull --ff-only <remote> main` (the checkout must be clean and on
        `main`, or it says so and skips the verify); verify `main` once for all merged tasks; then
-       remove each worktree and branch. A squashed or merge-committed branch isn't an ancestor of
-       `main`, so on a forge the branch is deleted with `-D`, but only after `status.sh` said
-       `merged`. On the local forge, `merged` means you merged by hand; `-d` is enough;
+       remove each worktree and branch. A squashed branch isn't an ancestor of `main`, so it's
+       deleted with `-D`, but only after `status.sh` said `merged`. On the local forge, `merged`
+       here means you merged by hand;
      - `closed`: `discard.sh` (on GitHub it deletes the remote branch, so the id can be
        re-queued and submitted again), then listed for orchestrate;
      - a task still running: skipped;

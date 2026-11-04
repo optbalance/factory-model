@@ -58,8 +58,9 @@ Before writing files, show the user the task list: for each task its id, one lin
 ## 4. Write the task files
 
 One file per task, `docs/specs/NNN-name/tasks/<id>.md`, in the format of
-`$FACTORY_HOME/templates/task.md`. `<id>` is `TTT-short-name`: `TTT` continues after the highest
-task number in any `docs/specs/*/tasks/` (ids name branches, so they're unique across specs).
+`$FACTORY_HOME/templates/task.md`. `<id>` is `NNN-TT-short-name`: `NNN` is the spec's number,
+`TT` numbers its tasks from `01`, and `short-name` is kebab-case (`004-02-csv-export`). Ids name
+branches, so the spec's number keeps them unique across specs.
 `spec` is the spec's path.
 
 - **Goal:** the outcome in one or two sentences.

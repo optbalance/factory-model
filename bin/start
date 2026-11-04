@@ -5,7 +5,7 @@
 # config/sandbox-env. Values: NAME=value lines in $FACTORY_ENV (default ~/.config/factory/env), mode 600.
 set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
-envfile="${FACTORY_ENV:-$HOME/.config/factory/env}"
+. "$FACTORY_HOME/bin/lib/env.sh"; envfile=$factory_env
 [ $# -ge 1 ] || { echo "usage: start <command> [args...]   e.g. start claude" >&2; exit 2; }
 [ -r "$envfile" ] \
   || { echo "start: $envfile not found. Create it with mode 600 (docs/how-to/building-the-factory.md, Module 2)" >&2; exit 1; }
