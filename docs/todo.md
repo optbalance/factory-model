@@ -11,6 +11,17 @@ when it's fixed.
   overwrites the other's, and tasks of one product run in the other's toolchain. Possible fix:
   derive the name in one helper used by both scripts, from the basename plus a short hash of the
   absolute repo path.
+- **`bin/build-worker` never reuses its cache above the toolchain layer.** Each layer is a separate
+  `docker build` whose `FROM` is the previous layer's tag. A fully cached build still produces a
+  new image ID (two consecutive cached builds of `sandbox/Containerfile` on the same base gave
+  different IDs), so the next layer's `FROM` resolves to a new digest, misses its cache and
+  rebuilds. Measured on a Gradle product with docker 29.9.3 and BuildKit v0.34.2: toolchain 1s
+  (cached), base 33s, pi 28s, claude 11s, about 70s per run with nothing changed. `bin/fan-out`
+  pays it on every batch, and a per-task image rebuild before verify would pay it on every verify
+  round. Cause not confirmed; likely suspect is BuildKit provenance metadata making image IDs
+  differ. Possible fix: check whether `--provenance=false` gives stable IDs; otherwise build all
+  layers in one BuildKit graph (one multi-stage build or `docker buildx bake`), so layers chain
+  by cache key instead of by tag.
 - **No hard stop for dependencies installed into the worktree.** Tasks must not change
   dependencies; `bin/run-task` (`docs/how-to/building-the-factory.md`, Module 3) enforces that only
   through offline `scripts/verify`, which fails when a build tool that downloads outside the

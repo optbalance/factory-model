@@ -6,7 +6,8 @@ any product, with any harness. Read `docs/how-to/how-the-factory-works.md` for t
 `docs/product/product-contract.md`; what the machine must provide is in
 `docs/factory/factory-contract.md`, what a harness adapter must provide is in
 `docs/adapter/adapter-contract.md`, what a forge (git host) must provide is in
-`docs/forge/forge-contract.md`, and how to run the factory is in
+`docs/forge/forge-contract.md`, what an issue tracker must provide is in
+`docs/tracker/tracker-contract.md`, and how to run the factory is in
 `docs/factory/operating-the-factory.md`.
 
 ## Strict rules
@@ -18,7 +19,8 @@ any product, with any harness. Read `docs/how-to/how-the-factory-works.md` for t
    config and hook formats, install steps, auth variables, session handling) lives only in
    `adapters/<harness>/`. Code outside `adapters/` must work unchanged with every harness. The
    same holds for forges: everything specific to one git host (its CLI, API, URLs) lives only in
-   `forges/<forge>/`.
+   `forges/<forge>/`. And for trackers: everything specific to one issue tracker (its CLI, API,
+   URLs, statuses, how it stores a body) lives only in `trackers/<tracker>/`.
 
 Allowed exceptions: `config/` names harnesses, models and provider keys (choosing them is its
 job), `docs/` describes products and harnesses as examples, and `templates/` holds generic
