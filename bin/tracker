@@ -31,12 +31,13 @@ tracker=$(props_get tracker none '^[a-z0-9-]+$') || exit 2
 [ -n "${PROPS[tracker.project]:-}" ] || die "factory.properties: tracker=$tracker needs tracker.project"
 project=$(props_get tracker.project '' '^[A-Za-z0-9._/-]+$') || exit 2
 
-# state: runs/tracker/<product>/, the product named as bin/sandbox names it
+# the product, named as bin/sandbox names it: its state is runs/tracker/<product>/, and the factory
+# sees only the tracker's items labeled factory:<product>
 common=$(git -C "$PRODUCT" rev-parse --path-format=absolute --git-common-dir)
 product=$(basename "$(dirname "$common")"); product=${product,,}; product=${product//[^a-z0-9._-]/-}
 TRACKER_STATE="$FACTORY_HOME/runs/tracker/$product"; mkdir -p "$TRACKER_STATE"
 
-export PRODUCT TRACKER_PROJECT=$project TRACKER_STATE
+export PRODUCT TRACKER_PROJECT=$project TRACKER_LABEL=factory:$product TRACKER_STATE
 case "$op" in publish|plan|sync) ;; *) exec "$FACTORY_HOME/trackers/$tracker/$op.sh" "$@" ;; esac
 
 # publish, plan and sync are the factory's own, built on the six scripts: bin/lib/tracker/<op>.sh

@@ -2785,7 +2785,7 @@ and 3. Your approvals are column moves: `open` → `todo` approves the story, `r
 ### Build
 
 1. **`factory.properties`: which tracker a product uses** (product contract, Step 6):
-   `tracker=none|<name>`, `tracker.project=<id>`, and `tracker.parent-type` and
+   `tracker=none|<name>`, `tracker.project=<id>` (where new tasks go), and `tracker.parent-type` and
    `tracker.child-type` where the tracker has issue types. Read with `bin/forge`'s parser,
    `bin/lib/properties.sh` (built), with `bin/tracker`'s own patterns: `tracker.project` may
    contain `/`. Keys only one tracker uses are checked by that tracker.
@@ -2795,7 +2795,8 @@ and 3. Your approvals are column moves: `open` → `todo` approves the story, `r
    doing one call or a few, with no logic of its own beyond mapping the tracker's statuses, keys
    and bodies to the contract's. `AGENTS.md` rule 2 covers `trackers/` the same way it covers
    `forges/`. `bin/tracker name|<op> <product-dir>` (built) reads the tracker's keys, exports
-   `PRODUCT`, `TRACKER_PROJECT` and `TRACKER_STATE`, and runs `trackers/<name>/<op>.sh`; nothing
+   `PRODUCT`, `TRACKER_PROJECT`, `TRACKER_LABEL` (`factory:<product>`: the only items the factory
+   sees, contract Step 2) and `TRACKER_STATE`, and runs `trackers/<name>/<op>.sh`; nothing
    else in the factory knows which tracker a product uses.
 
 3. **Headless planning: `roles/planner.md`** (built). The plan skill's steps 1, 2, 4 and 5 as a
@@ -2920,7 +2921,9 @@ and 3. Your approvals are column moves: `open` → `todo` approves the story, `r
    tasks and their progress, and stories don't count against the free plan's issue cap. Name both
    sets of statuses as in the contract's Step 2: project statuses in Settings → Projects →
    Statuses (workspace-wide, free plan), the team's workflow in its settings. Keys: a project's
-   `slugId` (12 hex digits) and an issue's identifier (`NTG-12`). Linear reformats Markdown
+   `slugId` (12 hex digits) and an issue's identifier (`NTG-12`). Linear keeps project labels and
+   issue labels apart, so `factory:<product>` exists as both; `items.sh` filters by label name,
+   and `write.sh` looks the label up by name and stops if it's missing. Linear reformats Markdown
    (escapes, blank lines) but keeps lines, which is all the contract asks. Read a project's
    comments through the top-level `comments` query: the project's own `comments` field comes back
    empty. GitHub Issues with a Projects board reuses the

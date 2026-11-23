@@ -3,7 +3,8 @@
 # A story is a Linear project, its key the project's slugId (df9d7ddeed9a), its body the project's
 # content, its status one of the workspace's project statuses. A task is an issue in that project,
 # its key the issue's identifier (NTG-12), its body the description, its status one of the team's
-# workflow states. TRACKER_PROJECT is the team's key (NTG).
+# workflow states. TRACKER_PROJECT is the key of the team new tasks go to (NTG). TRACKER_LABEL
+# (factory:shovel) is a project label on the product's stories and an issue label on its tasks.
 die() { echo "tracker linear: $*" >&2; exit 1; }
 command -v curl >/dev/null && command -v jq >/dev/null || die "curl and jq are needed on the host"
 . "$FACTORY_HOME/bin/lib/env.sh"
@@ -45,6 +46,16 @@ team_id() {
   gql 'query($k: String!) { teams(filter: {key: {eq: $k}}) { nodes { id } } }' \
       "$(jq -n --arg k "$TRACKER_PROJECT" '{k: $k}')" \
     | jq -er '.teams.nodes[0].id // empty' || die "no team with the key $TRACKER_PROJECT"
+}
+
+# label_id <project|issue>: the id of the project label, or the issue label of the workspace or the
+# team, that TRACKER_LABEL names
+label_id() {
+  local f=${1}Labels
+  gql "query(\$n: String!) { $f(filter: {name: {eqIgnoreCase: \$n}}) { nodes { id team { key } } } }" \
+      "$(jq -n --arg n "$TRACKER_LABEL" '{n: $n}')" \
+    | jq -er --arg k "$TRACKER_PROJECT" "first(.$f.nodes[] | select(.team == null or .team.key == \$k) | .id) // empty" \
+    || die "no $1 label named $TRACKER_LABEL (create it in Linear's settings, Labels)"
 }
 
 # norm: a status name as the contract writes it (In Progress → in-progress), in jq

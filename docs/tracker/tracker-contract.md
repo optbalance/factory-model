@@ -34,7 +34,7 @@ contract, Step 6), next to its forge:
 
 ```properties
 tracker=linear              # none | <name of a trackers/ directory>
-tracker.project=ENG         # the team, project, board or repository the tracker reads
+tracker.project=ENG         # where new items go: the team, project, board or repository
 ```
 
 `bin/tracker` reads the file from `main` with the same parser as `bin/forge`
@@ -53,8 +53,8 @@ bin/tracker publish <product-dir> <story> <dir>       factory side: writes a pla
 bin/tracker sync    <product-dir>                     factory side: one pass over the board (Module 11)
 ```
 
-For a tracker operation it exports `FACTORY_HOME`, `PRODUCT`, `TRACKER_PROJECT` and
-`TRACKER_STATE` (the product's state directory, Step 6), and runs the script with the operation's
+For a tracker operation it exports `FACTORY_HOME`, `PRODUCT`, `TRACKER_PROJECT`, `TRACKER_LABEL`
+(Step 2) and `TRACKER_STATE` (the product's state directory, Step 6), and runs the script with the operation's
 arguments. `publish` and `sync` are the factory's own code, written once on top of the six
 scripts; no tracker implements them.
 
@@ -65,6 +65,14 @@ its body is a task file. The tracker uses its own parent/child link (a sub-issue
 story under an epic, an issue in a project). Where the tracker has issue types, `tracker.parent-type` and
 `tracker.child-type` in `factory.properties` name them; each tracker documents its defaults.
 Deeper hierarchies are not part of the contract.
+
+**One label.** The factory sees only items labeled `factory:<product>`, where `<product>` is the
+product repo's directory name, lowercased, as `bin/sandbox` names it (`factory:shovel`):
+`TRACKER_LABEL`. Everything else on the board, other labels included, doesn't exist for it. You
+put the label on a story to hand it to the factory; the factory puts it on every item it creates.
+The label scopes a product, not a team or a board: several products can share one, a story can
+carry several products' labels, and each product sees only its own tasks under it. You create the
+label once in the tracker; the factory never creates labels.
 
 **Eight statuses.** The board's statuses carry these names, compared case-insensitively with a
 space and a `-` counted as equal (`In progress` is `in-progress`). There is no mapping config: you
@@ -133,9 +141,9 @@ the implementer (forge contract), and two channels would need rules about which 
 
 | Script | Does | Prints | Exit |
 |---|---|---|---|
-| `items.sh [<story>]` | Lists the stories of `tracker.project`, or one story's tasks | one line per item, tab-separated: `key`, `status` (Step 2), `title` | 0, or 1 with the reason on stderr |
+| `items.sh [<story>]` | Lists the stories labeled `TRACKER_LABEL`, or one story's tasks labeled so | one line per item, tab-separated: `key`, `status` (Step 2), `title` | 0, or 1 with the reason on stderr |
 | `read.sh <key>` | Gets an item's body | the body as Markdown, each line as `write.sh` or you wrote it (Step 5) | 0, or 1 |
-| `write.sh <key>\|- <story>\|- <title>` | Creates the item (key `-`) or replaces its title and body; the body comes on stdin. A new story starts in `open`, a new task in `todo`; `<story>` makes it that story's child. Updating doesn't change the status | the item's key | 0, or 1 |
+| `write.sh <key>\|- <story>\|- <title>` | Creates the item (key `-`) or replaces its title and body; the body comes on stdin. A new item gets `TRACKER_LABEL` and goes to `tracker.project`; a new story starts in `open`, a new task in `todo`; `<story>` makes it that story's child. Updating doesn't change the status or the labels | the item's key | 0, or 1 |
 | `move.sh <key> <status>` | Sets the status, `canceled` included | nothing | 0, or 1 |
 | `comment.sh <key>` | Posts the Markdown on stdin as a comment, with the line `🏭 factory` before it | nothing | 0, or 1 |
 | `comments.sh <key>` | Takes the comments not taken yet, except the factory's own, oldest first, and records them as taken | each as `**<author>**, <time>:` then its body, or nothing | 0, or 1 |
@@ -233,7 +241,8 @@ items in files and logs its calls:
 2. `write.sh -` creates an item and prints its key; `write.sh <key>` updates it without changing
    its status; `read.sh` returns the body with every line kept as a line, and a task's field
    lines read back to the same values.
-3. `items.sh` maps the board's statuses to Step 2's names, and gives `other` for any other one.
+3. `items.sh` maps the board's statuses to Step 2's names, and gives `other` for any other one;
+   it lists only items labeled `TRACKER_LABEL`, and `write.sh -` labels what it creates.
 4. `comments.sh` gives a new comment once, never the factory's own; a second call prints nothing.
 5. `bin/tracker publish` twice: the second run changes nothing; with a task removed from the plan,
    that task is `canceled`.

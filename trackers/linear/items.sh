@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# usage: items.sh [<story>]   the team's projects (stories), or one project's issues (tasks): key,
-# status, title, tab-separated. A status whose name isn't one of the contract's is `other`.
+# usage: items.sh [<story>]   the projects (stories), or one project's issues (tasks), that carry
+# TRACKER_LABEL: key, status, title, tab-separated. A status whose name isn't one of the contract's
+# is `other`.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 [ $# -le 1 ] || die "usage: items.sh [<story>]"
 if [ $# = 1 ]; then
   item "$1"; [ "$KIND" = project ] || die "not a story (project) key: $1"
-  vars=$(id_vars); at=.project.issues
-  q='query($id: String!, $after: String) { project(id: $id) { issues(first: 100, after: $after) {
+  vars=$(jq -n --arg id "$ID" --arg l "$TRACKER_LABEL" '{id: $id, l: $l}'); at=.project.issues
+  q='query($id: String!, $l: String!, $after: String) { project(id: $id) {
+       issues(first: 100, after: $after, filter: {labels: {some: {name: {eqIgnoreCase: $l}}}}) {
        pageInfo { hasNextPage endCursor } nodes { key: identifier title status: state { name } } } } }'
 else
-  vars=$(jq -n --arg k "$TRACKER_PROJECT" '{k: $k}'); at=.projects
-  q='query($k: String!, $after: String) {
-       projects(first: 100, after: $after, filter: {accessibleTeams: {some: {key: {eq: $k}}}}) {
+  vars=$(jq -n --arg l "$TRACKER_LABEL" '{l: $l}'); at=.projects
+  q='query($l: String!, $after: String) {
+       projects(first: 100, after: $after, filter: {labels: {some: {name: {eqIgnoreCase: $l}}}}) {
        pageInfo { hasNextPage endCursor } nodes { key: slugId title: name status { name } } } }'
 fi
 after=null

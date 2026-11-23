@@ -179,7 +179,7 @@ work in a session, with the `spec`, `plan` and `orchestrate` skills.
 forge=local          # local | github
 forge.remote=origin  # the remote the factory pushes task branches to (not used by local)
 tracker=none         # none | linear
-tracker.project=     # with a tracker: the team, project or board it reads (Linear: the team's key, ENG)
+tracker.project=     # with a tracker: the team, project or board new tasks go to (Linear: the team's key, ENG)
 ```
 
 ### The forge
@@ -219,8 +219,12 @@ Also:
   Statuses) and the team's workflow states this way: rename or add (Linear's defaults have no
   `Blocked`, and no `Open`, `Todo` or `Refined` project status). Extra ones such as `Backlog`
   may stay; the factory ignores items in them.
-- **One `tracker.project` per product.** The factory reads every story in it. Two products
-  naming the same one would both plan and run each story (`docs/todo.md` lists a fix).
+- **Label what the factory should take: `factory:<product>`**, `<product>` being the repo's
+  directory name, lowercased (`factory:shovel`). The factory sees only items with that label and
+  puts it on the tasks it creates; create the label once in the tracker. Several products can
+  share a team or board. With Linear, create it twice: as a project label (for stories) and as an
+  issue label of the workspace or of the `tracker.project` team (for tasks). Keep it a plain
+  label, not inside a label group: an item takes only one label of a group.
 - **Code remarks go in the forge's review**, never in tracker comments. Tracker comments answer
   the planner's questions, or say what to change in a story or a blocked task.
 - the host signs in to the tracker, and a timer runs the factory's `bin/tracker sync` for the

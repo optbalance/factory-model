@@ -161,7 +161,7 @@ timer runs `bin/tracker sync` every few minutes, and each pass acts on what chan
 
 | You | The factory, on the next pass |
 |---|---|
-| Write a story (status `open`), or have the `spec` skill write it | nothing: `open` is yours |
+| Write a story (status `open`) labeled `factory:<product>`, or have the `spec` skill write it | nothing: `open` is yours; a story without the label is never seen |
 | Move the story to `todo` | plans it headless: tasks on the story and `refined`, or questions as a comment and `blocked` |
 | Answer in comments (on the story or its tasks), move it back to `todo` | plans it again with your comments; a task that stays keeps its id and is updated, a dropped one is `canceled` |
 | Move the story to `in-progress` | runs its tasks, at most 3 at a time, by `depends_on` and `touches`; each goes `in-progress`, then `in-review` with the pull request's link, or `blocked` with the reason |

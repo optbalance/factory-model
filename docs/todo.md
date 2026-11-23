@@ -10,8 +10,9 @@ when it's fixed.
   basename (`~/projects/shop`, `~/work/shop`) both use the image `factory-worker-shop`, so
   building one overwrites the other's, and tasks of one product run in the other's toolchain;
   they also share the tracker state `runs/tracker/shop/`, so one product's `comments.sh` takes
-  the other's comments. Possible fix: derive the name in one helper used by all three scripts,
-  from the basename plus a short hash of the absolute repo path.
+  the other's comments, and the label `factory:shop`, so each sees the other's stories. Possible fix: derive the name in one helper used by all three scripts,
+  from the basename plus a short hash of the absolute repo path; the tracker label needs a name
+  people can type, so for it an explicit `product.name` in `factory.properties` fits better.
 - **`bin/build-worker` never reuses its cache above the toolchain layer.** Each layer is a separate
   `docker build` whose `FROM` is the previous layer's tag. A fully cached build still produces a
   new image ID (two consecutive cached builds of `sandbox/Containerfile` on the same base gave
@@ -118,20 +119,6 @@ when it's fixed.
   whose token goes in the secrets file instead of yours. `comments.sh` then skips comments by
   that author, and the board shows who moved what. Check whether the tracker's free plan allows
   an extra user or app.
-- **One tracker team can't serve several products.** `bin/tracker sync` scopes a product's board
-  by `tracker.project` alone (`docs/tracker/tracker-contract.md`, Step 1); for Linear that is a team
-  key, and `trackers/linear/items.sh` lists every project (story) linked to the team. Two products
-  whose `factory.properties` name the same team both see every story: each plans it against its
-  own repo, publishes tasks under it, and moves the same tickets back and forth. A Linear project
-  linked to two teams does the same for that one story. Nothing detects either case. Workaround
-  until fixed: one team per product. Possible fix: an optional per-tracker key, read only by
-  `trackers/<name>/` (e.g. `tracker.scope=<label>`: Linear keeps the team's projects carrying that
-  label; Jira a component; GitHub a label), so `items.sh` lists only that product's stories; a
-  story without it is never seen, so say so in sync's output or the docs. To catch the
-  misconfiguration, `bin/tracker sync` could refuse when another product on the same host uses
-  the same `tracker`, `tracker.project` and scope; across hosts, the planner's tasks or the
-  tracker state could record which product (repo URL) planned a story, and sync skip stories
-  planned by another.
 - **`run-task --rework`'s handling of your remarks against the AI reviewer is untested with real
   agents.** One real rework ran (shovel task 005, before the fix): the implementer applied the
   remark and wrote `Review answers`, then the reviewer, who didn't see the remarks, had it
@@ -251,11 +238,14 @@ when it's fixed.
   `roles/planner.md` in one worktree; `bin/tracker sync <product-dir>`), but a story such as a
   client/server feature needs tasks in several repos, while each task stays in one product (the
   smallest change). What goes wrong: the user splits such stories by hand and repeats the
-  interface in each, and nothing checks the pieces fit. Prerequisites, designed but not built:
-  sync runs per board over the products the timer line lists (`bin/tracker sync <dir> <dir>...`),
-  one `factory` label opts a story in, a task file gets a `product:` field and lives on its
-  product's anchor team (`tracker.team`), each product gives a one-line `product.summary` in
-  `factory.properties` (the index) and a `## Peers` section in its `AGENTS.md` (each peer, server
+  interface in each, and nothing checks the pieces fit. Already there: a story can carry several
+  products' `factory:<product>` labels, and each product's tasks carry its own label and go to
+  its `tracker.project` team. But the story's one status is shared: today each labeled product's
+  sync plans the story on `todo`, the first to finish moves it to `refined` (the others then never
+  plan it), and the first whose tasks are all done moves it to `done`. So sync must run per board
+  over the products the timer line lists (`bin/tracker sync <dir> <dir>...`), and own the story's
+  status for all of them. Prerequisites, designed but not built: that sync, and from each product
+  a one-line `product.summary` in `factory.properties` (the index) and a `## Peers` section in its `AGENTS.md` (each peer, server
   or client, and where the interface is defined). Possible fix, the star: a root planner (new role,
   e.g. `roles/story-planner.md`) gets the story, the index and the peers, reads only peers'
   `AGENTS.md` and interface files, and writes either `QUESTIONS.md` or one brief per product: what
