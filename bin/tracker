@@ -4,6 +4,7 @@
 #        tracker publish <product-dir> <story> <dir>    writes a plan's task files to the story
 #        tracker plan <product-dir> <story>             plans the story with the headless planner
 #        tracker sync <product-dir>                     one pass over the board (run it through bin/start)
+#        tracker pause|resume <product-dir>             stops or restarts the passes (bin/status shows it)
 # Runs one operation of the product's issue tracker (docs/tracker/tracker-contract.md). The tracker
 # is named in the product's factory.properties, as committed on main; without it, it is `none`.
 set -euo pipefail
@@ -15,9 +16,11 @@ case "$op" in
   items|read|write|move|comment|comments) [ $# -ge 2 ] || die "usage: tracker $op <product-dir> [args...]" ;;
   publish) [ $# = 4 ] || die "usage: tracker publish <product-dir> <story> <dir>" ;;
   plan) [ $# = 3 ] || die "usage: tracker plan <product-dir> <story>" ;;
+  pause|resume) [ $# = 2 ] || die "usage: tracker $op <product-dir>" ;;
   sync) [ $# = 2 ] || die "usage: tracker sync <product-dir>" ;;
   *) die "usage: tracker name <product-dir> | tracker <items|read|write|move|comment|comments> <product-dir> [args...]
-       | tracker publish <product-dir> <story> <dir> | tracker plan <product-dir> <story> | tracker sync <product-dir>" ;;
+       | tracker publish <product-dir> <story> <dir> | tracker plan <product-dir> <story> | tracker sync <product-dir>
+       | tracker pause|resume <product-dir>" ;;
 esac
 PRODUCT="$(cd "$2" && pwd)"; shift 2
 
@@ -38,6 +41,11 @@ product=$(basename "$(dirname "$common")"); product=${product,,}; product=${prod
 TRACKER_STATE="$FACTORY_HOME/runs/tracker/$product"; mkdir -p "$TRACKER_STATE"
 
 export PRODUCT TRACKER_PROJECT=$project TRACKER_LABEL=factory:$product TRACKER_STATE
+# paused: sync passes do nothing; runs already started finish
+case "$op" in
+  pause) touch "$TRACKER_STATE/paused"; echo "tracker: $product paused"; exit 0 ;;
+  resume) rm -f "$TRACKER_STATE/paused"; echo "tracker: $product resumed"; exit 0 ;;
+esac
 case "$op" in publish|plan|sync) ;; *) exec "$FACTORY_HOME/trackers/$tracker/$op.sh" "$@" ;; esac
 
 # publish, plan and sync are the factory's own, built on the six scripts: bin/lib/tracker/<op>.sh

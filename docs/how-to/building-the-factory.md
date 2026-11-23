@@ -690,13 +690,16 @@ The setup steps, with the variable each harness needs, are in `docs/factory/fact
 
 ```bash
 #!/usr/bin/env bash
-# usage: sandbox [--net open|none] <workdir> <rundir> -- <command> [args...]
-# Runs <command> in <workdir>, isolated per $SANDBOX (podman|docker|bwrap|none).
+# usage: sandbox [--net open|none] [--job <name>] <workdir> <rundir> -- <command> [args...]
+# Runs <command> in <workdir>, isolated per $SANDBOX (podman|docker|bwrap|none). --job names what
+# runs (agent-run passes the role; default: the command's file name).
 set -euo pipefail
 FACTORY_HOME="${FACTORY_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"; export FACTORY_HOME
 mode="${SANDBOX:-docker}"
-net=open; if [ "$1" = --net ]; then net=$2; shift 2; fi
+net=open; job=
+while :; do case "$1" in --net) net=$2; shift 2 ;; --job) job=$2; shift 2 ;; *) break ;; esac; done
 wt=$1; rundir=$2; shift 2; [ "$1" = -- ] && shift
+job=${job:-$(basename "$1")}
 mkdir -p "$rundir"                                   # created as you, not by the container engine
 wt=$(realpath -ms "$wt"); rundir=$(realpath -ms "$rundir")   # mounts need absolute paths
 
@@ -731,6 +734,9 @@ case "$mode" in
     [ "$net" = none ] && args+=(--network none)
     args+=(--user "$(id -u):$(id -g)")                              # files stay owned by you
     [ "$mode" = podman ] && args+=(--userns=keep-id)                 # rootless: map your ID to itself
+    # what runs, for `$mode ps --filter label=factory.job`
+    args+=(--label "factory.product=$product" --label "factory.job=$job"
+           --label "factory.workdir=$wt" --label "factory.rundir=$rundir")
     for n in "${names[@]}"; do [ -n "${!n:-}" ] && args+=(-e "$n"); done
     exec "$mode" "${args[@]}" "$image" "$@" ;;
 
@@ -759,6 +765,11 @@ worktree's own git dir end up writable even though their parent directories are 
 The image name comes from the product repo's directory: a worktree's shared `.git` sits in the
 product repo, so every worktree of `~/projects/shop` runs in `factory-worker-shop`. Set
 `SANDBOX_IMAGE` to override it.
+
+Each container carries labels saying what runs in it: the product, the job (the role, or
+`verify`), the worktree and the run directory. `docker ps --filter label=factory.job --format
+'{{.Label "factory.job"}} {{.RunningFor}} {{.Label "factory.rundir"}}'` lists what the factory is
+running now. With `bwrap` and `none` there is no container, so no labels.
 
 ### The worker image
 
@@ -1374,7 +1385,7 @@ mkdir -p "$rundir"
     || { echo "agent-run: AGENTS.md is not committed on main (product contract, Step 2)" >&2; exit 1; }
   echo; cat "$FACTORY_HOME/roles/$role.md"; } > "$rundir/$role.system.md"
 echo "$(date -Is) $role $(jq -r .model <<<"$cfg") sandbox=${SANDBOX:-docker}" >> "$rundir/calls.log"
-exec "$FACTORY_HOME/bin/sandbox" "$workdir" "$rundir" -- \
+exec "$FACTORY_HOME/bin/sandbox" --job "$role" "$workdir" "$rundir" -- \
      "$FACTORY_HOME/adapters/$harness/run.sh" "$cfg" "$role" "$workdir" "$prompt" "$rundir"
 ```
 
@@ -2844,8 +2855,10 @@ and 3. Your approvals are column moves: `open` → `todo` approves the story, `r
 5. **`bin/tracker sync <product-dir>`: one pass over the board** (built,
    `bin/lib/tracker/sync.sh`). A script, not a skill (design rule 2): the planner is the only
    model it adds, apart from the agents `fan-out` and `bin/rework` already run. Run it through
-   `bin/start`, like `bin/rework`. Under a lock per product (`flock`; a second sync exits at once),
-   in this order:
+   `bin/start`, like `bin/rework`. A paused product (`bin/tracker pause <product-dir>`, a
+   `paused` file in its state directory; `resume` removes it) gets an empty pass, silent unless
+   run from a terminal. Otherwise, under a lock per product (`flock`; a second sync exits at
+   once), in this order:
    1. `bin/review sync` (Module 10), with `REWORK_DETACH=1` so reworks start in the background
       instead of holding the pass. If it fails, or `main` is red, no new task starts this pass.
    2. Each task in `in-progress` or `in-review` that the factory started (it has a `run`): merged

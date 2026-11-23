@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# usage: status
+# What the factory is doing now: the jobs running in sandbox containers (bin/sandbox labels them),
+# and for each product with a tracker, its board passes (bin/tracker sync): on or paused, the
+# last one, and whether one runs now.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+. "$FACTORY_HOME/bin/lib/lock.sh"
+mode="${SANDBOX:-docker}"
+
+# ago <epoch>: how long ago, short
+ago() {
+  local s=$(( $(date +%s) - $1 ))
+  if [ $s -lt 60 ]; then echo "${s}s"; elif [ $s -lt 3600 ]; then echo "$((s / 60))m"
+  elif [ $s -lt 86400 ]; then echo "$((s / 3600))h$((s % 3600 / 60))m"; else echo "$((s / 86400))d"; fi
+}
+
+echo "RUNNING"
+case "$mode" in
+  docker|podman)
+    rows=$("$mode" ps --filter label=factory.job --format \
+      '{{.Label "factory.product"}}\t{{.Label "factory.job"}}\t{{.CreatedAt}}\t{{.Label "factory.rundir"}}')
+    if [ -z "$rows" ]; then echo "  nothing"
+    else
+      { echo -e "  PRODUCT\tJOB\tFOR\tRUN"
+        while IFS=$'\t' read -r product job created rundir; do
+          # CreatedAt ends in a zone name date can't parse ("+0100 CET"): drop it
+          echo -e "  $product\t$job\t$(ago "$(date -d "${created% [A-Z]*}" +%s)")\t${rundir#"$FACTORY_HOME"/}"
+        done <<<"$rows"
+      } | column -t -s $'\t'
+    fi ;;
+  *) echo "  unknown: SANDBOX=$mode starts no containers" ;;
+esac
+
+echo; echo "BOARD PASSES"
+dirs=("$FACTORY_HOME"/runs/tracker/*/)
+if [ ! -d "${dirs[0]}" ]; then echo "  none yet"
+else
+  { echo -e "  PRODUCT\tPASSES\tLAST\tNOW"
+    for d in "${dirs[@]}"; do
+      d=${d%/}; l=$d/sync.lock
+      if [ -f "$d/paused" ]; then on=paused; else on=on; fi    # bin/tracker pause|resume
+      # each pass opens the lock file, so its mtime is the last pass's start
+      if [ -f "$l" ]; then last="$(ago "$(stat -c %Y "$l")") ago"; else last=never; fi
+      if lock_held "$l"; then now=running; else now=idle; fi
+      echo -e "  $(basename "$d")\t$on\t$last\t$now"
+    done
+  } | column -t -s $'\t'
+fi

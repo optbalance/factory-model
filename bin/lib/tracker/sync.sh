@@ -5,6 +5,8 @@
 # State in $TRACKER_STATE/<key>: `plan` (a story's latest plan run dir) and `run` (a task's latest
 # run dir); runs/<timestamp>.exit holds a batch's fan-out exit code once it ends. A plan or batch
 # that died without finishing (a reboot) is started again: its lock tells (bin/lib/lock.sh).
+# Paused (bin/tracker pause): silent, unless run by hand, so a timer's log doesn't fill up
+if [ -f "$TRACKER_STATE/paused" ]; then [ -t 1 ] && echo "sync: paused (bin/tracker resume)"; exit 0; fi
 [ -n "${FACTORY_STARTED:-}" ] || die "start it through bin/start (bin/start bin/tracker sync <product-dir>): the reworks it starts need the secrets"
 exec 9> "$TRACKER_STATE/sync.lock"
 flock -n 9 || { echo "sync: another sync of this product is running"; exit 0; }

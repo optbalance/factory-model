@@ -10,10 +10,11 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 |---|---|---|
 | Start the orchestrator | `bin/start <harness> <the flags that load the factory into it>` (section 1) | ✓ |
 | Specify and plan work | skills `spec`, then `plan`, in a session started with `bin/start` in the product repo; with a tracker they write to the board | ✓ |
+| See what the factory is doing now: running jobs, board passes | `bin/status` (`watch bin/status` to follow) | ✓ |
 | Check the factory layout | `bin/check-factory` | ✓ |
 | Test the guards | `guards/test.sh` | ✓ |
 | Build or rebuild a product's worker image | `bin/build-worker <product-dir> [harness...]` | ✓ |
-| Run one command in a sandbox (debugging) | `bin/sandbox [--net none] <worktree> <rundir> -- <command>` | ✓ |
+| Run one command in a sandbox (debugging) | `bin/sandbox [--net none] [--job <name>] <worktree> <rundir> -- <command>` | ✓ |
 | Check a product against the contract | `bin/check-product [--run] <product-dir>` | not built yet (Module 1) |
 | Run one role on any harness | `bin/agent-run <role> <workdir> <prompt-file> <run-dir>` | ✓ |
 | Implement one task, gated by verify | `bin/run-task <worktree> <task-file> <run-dir>` | ✓ |
@@ -28,6 +29,7 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 | Work from the board: plan, run, move cards (section 7) | `bin/start bin/tracker sync <product-dir>`, from a timer or by hand | ✓ (Linear) |
 | Plan one story now, headless (debugging) | `bin/start bin/tracker plan <product-dir> <story>` | ✓ |
 | Write a directory of task files to a story | `bin/tracker publish <product-dir> <story> <dir>` | ✓ |
+| Pause or resume a product's board passes | `bin/tracker pause\|resume <product-dir>` | ✓ |
 | One tracker operation (debugging) | `bin/tracker name <product-dir>`, `bin/tracker <items\|read\|write\|move\|comment\|comments> <product-dir> [args...]` | ✓ |
 | Turn failures into factory fixes | skill `retro`, in a session started with `bin/start` in `~/factory-model` | ✓ |
 | Measure runs: cost, turns, fix rounds | `bin/metrics [--tsv] [dir...]` | ✓ |
@@ -188,6 +190,8 @@ Rules of the board:
 
 Where to look when something seems stuck:
 
+- `bin/status`: what runs now (product, role or `verify`, for how long, its run dir), and each
+  product's passes: on or paused, and the last one; a last pass older than the timer's interval means the timer isn't running;
 - the timer's log, `runs/sync-<product>.log`: a dated line for each thing a pass did;
 - a plan: `runs/plan-<story>/<n>/` (`brief.md` is what the planner was given, `planner.log`,
   `plan/` the task files or `QUESTIONS.md`);
@@ -195,7 +199,9 @@ Where to look when something seems stuck:
 - run a pass by hand: `bin/start bin/tracker sync ~/projects/<product>`. A second pass while one
   runs exits at once; so does `bin/review sync` while another runs.
 
-To pause a product, comment out its timer line. Runs already started finish; nothing new starts.
+To pause a product, `bin/tracker pause ~/projects/<product>`: its passes do nothing, the forge
+included, until `bin/tracker resume ~/projects/<product>`. Runs already started finish; nothing
+new starts, and no card moves. The timer line stays; `bin/status` shows which products are paused.
 
 ## 8. Maintain the factory
 
