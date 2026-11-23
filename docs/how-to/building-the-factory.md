@@ -219,15 +219,20 @@ Factory `AGENTS.md`: keep it short. Describe the layout and the design rules abo
    ```
    The hooks are added in Module 2.
 3. For interactive sessions, load the plugin per session so nothing is written to the product
-   repo. Save an alias for it in your shell profile, like `FACTORY_HOME`:
+   repo:
+   ```bash
+   claude --plugin-dir ~/factory-model/adapters/claude/plugin
+   ```
+   Start sessions this way when you want the factory's skills and guards. Skills then appear
+   namespaced, as `/factory:spec`, `/factory:plan` and so on. Plain `claude` stays unchanged.
+   Headless workers get the same flag from `adapters/claude/run.sh`. From Module 4 on, factory
+   sessions start it through `bin/start`.
+
+   Optional, for convenience: save the command as an alias in your shell profile. It's yours, not
+   part of the factory; nothing in the factory uses it:
    ```bash
    echo "alias claude-factory='claude --plugin-dir ~/factory-model/adapters/claude/plugin'" >> ~/.bashrc
-   source ~/.bashrc
    ```
-   Start sessions with `claude-factory` when you want the factory's skills and guards. Skills then
-   appear namespaced, as `/factory:spec`, `/factory:plan` and so on. Plain `claude` stays
-   unchanged. Headless workers don't use the alias: `adapters/claude/run.sh` passes
-   `--plugin-dir` itself.
 4. Claude Code only runs Anthropic models. Your second provider for routing comes from Pi or Codex.
 
 **Codex:**
@@ -1755,14 +1760,14 @@ credentials, and `bin/start` also sets `FACTORY_HOME`, which the skill uses to f
 
 **Claude Code:**
 
-1. Route the `claude-factory` alias from Module 0 through `bin/start`, so factory sessions get
-   `FACTORY_HOME` and the credentials. Replace its line in `~/.bashrc` with:
+1. Start factory sessions through `bin/start`, so they get `FACTORY_HOME` and the credentials:
    ```bash
-   alias claude-factory='~/factory-model/bin/start claude --plugin-dir ~/factory-model/adapters/claude/plugin'
+   ~/factory-model/bin/start claude --plugin-dir ~/factory-model/adapters/claude/plugin
    ```
    The session then signs in with the token from `~/.config/factory/env` (same subscription) and
    can read every secret in that file, as the orchestrator can. Plain `claude` stays unchanged.
-2. In the product repo: `claude-factory --model opus --effort high`. Invoke the skills as
+   If you saved an alias in Module 0, change it to this command.
+2. In the product repo, add `--model opus --effort high` to that command. Invoke the skills as
    `/factory:spec` and `/factory:plan`.
 3. When the plan skill calls `bin/agent-run scout`, Claude Code asks for permission to run it.
    Allow it.
@@ -2148,7 +2153,9 @@ approvals and your guards are what protect you here.
 
 **Claude Code:**
 
-1. `claude-factory --model opus`, then `/factory:orchestrate docs/specs/NNN-name`.
+1. In the product repo, `~/factory-model/bin/start claude --plugin-dir
+   ~/factory-model/adapters/claude/plugin --model opus`, then `/factory:orchestrate
+   docs/specs/NNN-name`.
 2. Allow the factory scripts once, so it doesn't stop at every batch: add
    `Bash(~/factory-model/bin/*)` to the allow list in your user settings. Leave everything else
    on the default mode, which asks first.
@@ -2200,8 +2207,8 @@ Classify every failure and fix it in **the matching layer**:
 | A harness ignored a guard, flag or config | that harness's adapter (`adapters/<name>/`) |
 
 `skills/retro/`: reads recent `runs/`, reports and the factory log, then proposes concrete
-factory changes. You approve them. Run it in the factory repo (Claude Code:
-`claude-factory --model opus` in `~/factory-model`, then `/factory:retro`).
+factory changes. You approve them. Run it in the factory repo (Claude Code: in `~/factory-model`,
+`bin/start claude --plugin-dir adapters/claude/plugin --model opus`, then `/factory:retro`).
 
 The orchestrator appends to the log, with `fix: pending`; retro fills in the fix. The log's
 header in `docs/factory-log.md` defines the line format both skills use.

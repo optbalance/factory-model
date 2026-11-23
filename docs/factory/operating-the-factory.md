@@ -8,7 +8,7 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 
 | Job | Command | Status |
 |---|---|---|
-| Start the orchestrator | `bin/start <harness>` | ✓ |
+| Start the orchestrator | `bin/start <harness> <the flags that load the factory into it>` (section 1) | ✓ |
 | Specify and plan work | skills `spec`, then `plan`, in a session started with `bin/start` in the product repo; with a tracker they write to the board | ✓ |
 | Check the factory layout | `bin/check-factory` | ✓ |
 | Test the guards | `guards/test.sh` | ✓ |
@@ -42,18 +42,24 @@ shown. Update this table as each one lands.
 
 ```bash
 cd ~/factory-model
-bin/start claude          # or any harness, or a factory script: bin/start bin/fan-out ...
+bin/start claude --plugin-dir adapters/claude/plugin       # Claude Code
 ```
 
-`bin/start` loads the secrets from `~/.config/factory/env` and starts the command with them.
-Everything the orchestrator runs inherits them, and `bin/sandbox` passes on the names listed in
+`bin/start` loads the secrets from `~/.config/factory/env` and starts the command with them,
+whether a harness or a factory script (`bin/start bin/fan-out ...`). It knows nothing about
+harnesses: the harness must also load the factory's skills and guards, the way its setup in
+`docs/how-to/building-the-factory.md` says (Module 0, then Module 4's harness-specific steps).
+For Claude Code that is `--plugin-dir`; a plain `bin/start claude` has the secrets but no
+`/factory:` skills and no guards. From a product repo, give the full paths:
+`~/factory-model/bin/start claude --plugin-dir ~/factory-model/adapters/claude/plugin`.
+Everything the orchestrator runs inherits the secrets, and `bin/sandbox` passes on the names listed in
 `config/sandbox-env`. If `bin/sandbox` prints `<NAME> (config/sandbox-env) is not set`, the
 orchestrator wasn't started through `bin/start`, or the file lacks that line.
 
 Choose the sandbox backend with `SANDBOX` before starting (default `docker`):
 
 ```bash
-SANDBOX=podman bin/start claude
+SANDBOX=podman bin/start claude --plugin-dir adapters/claude/plugin
 ```
 
 ## 2. Plug in a product (once per product)
