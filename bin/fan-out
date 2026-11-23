@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# usage: fan-out <product-dir> <task-file>...   (task paths relative to the product root, committed on main)
+# usage: fan-out <product-dir> <task-file>...
+# A task file is a path relative to the product root, committed on main, or an absolute path to a
+# file outside the product (a task exported from a tracker); its id is the file's name without .md.
 # Runs the tasks in parallel, each in its own worktree <product-dir>-wt/<id> on branch factory/<id>.
+# Each task works from a copy taken now, runs/<timestamp>/<id>.md (read-only in the sandbox).
 # Results go to runs/<timestamp>/<id>; read them with bin/collect. Each task that ends green and
 # approved is submitted to the product's forge (bin/forge submit): ready for your review.
 set -euo pipefail
@@ -13,7 +16,8 @@ declare -A seen; bad=0
 for task in "$@"; do
   id=$(basename "$task" .md); wt="${PRODUCT}-wt/$id"
   err=""
-  if ! git -C "$PRODUCT" cat-file -e "main:$task" 2>/dev/null; then err="not committed on main"
+  if [[ $task = /* ]] && [ ! -f "$task" ]; then err="no such file"
+  elif [[ $task != /* ]] && ! git -C "$PRODUCT" cat-file -e "main:$task" 2>/dev/null; then err="not committed on main"
   elif [ -n "${seen[$id]:-}" ]; then err="id $id is used twice in this batch"
   elif git -C "$PRODUCT" show-ref --verify -q "refs/heads/factory/$id"; then err="branch factory/$id exists (merge or delete it first)"
   elif [ -e "$wt" ]; then err="$wt exists (git worktree remove it first)"
@@ -25,21 +29,25 @@ done
 [ $bad = 0 ] || exit 2
 
 mkdir -p "$FACTORY_HOME/runs"
-RUN="$FACTORY_HOME/runs/$(date +%Y%m%d-%H%M%S)"; mkdir "$RUN"
+RUN=${FANOUT_RUN:-"$FACTORY_HOME/runs/$(date +%Y%m%d-%H%M%S)"}; mkdir "$RUN"   # FANOUT_RUN: bin/tracker sync
 case "${SANDBOX:-docker}" in                     # keep the worker image in step with main
   podman|docker) "$FACTORY_HOME/bin/build-worker" "$PRODUCT" > "$RUN/build-worker.log" 2>&1 \
                    || { echo "fan-out: build-worker failed, see $RUN/build-worker.log" >&2; exit 1; } ;;
 esac
 for task in "$@"; do
   id=$(basename "$task" .md); wt="${PRODUCT}-wt/$id"; mkdir "$RUN/$id"
+  if [[ $task = /* ]]; then cp "$task" "$RUN/$id.md"; else git -C "$PRODUCT" show "main:$task" > "$RUN/$id.md"; fi \
+    || { echo "fan-out: $task: copying it failed, skipped" >&2; continue; }
   git -C "$PRODUCT" worktree add -q -b "factory/$id" "$wt" main \
     || { echo "fan-out: $task: creating the worktree failed, skipped" >&2; continue; }
   echo "$wt" > "$RUN/$id/worktree"               # for bin/collect
   rd="$RUN/$id"
-  ( "$FACTORY_HOME/bin/run-task" "$wt" "$task" "$rd" || exit 0
+  exec 8> "$rd/running.lock"; flock 8              # held by the task while it runs (bin/lib/lock.sh)
+  ( "$FACTORY_HOME/bin/run-task" "$wt" "$RUN/$id.md" "$rd" || exit 0
     [ "$(cat "$rd/status")/$(cat "$rd/verdict")" = green/approve ] || exit 0
     "$FACTORY_HOME/bin/forge" submit "$PRODUCT" "$rd" || echo "fan-out: submit failed"
   ) > "$rd/run-task.log" 2>&1 &
+  exec 8>&-
   echo "fan-out: started $id"
 done
 wait

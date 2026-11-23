@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# usage: tracker name <product-dir>                   the tracker's name, or none
+#        tracker <items|read|write|move|comment|comments> <product-dir> [args...]
+#        tracker publish <product-dir> <story> <dir>    writes a plan's task files to the story
+#        tracker plan <product-dir> <story>             plans the story with the headless planner
+#        tracker sync <product-dir>                     one pass over the board (run it through bin/start)
+# Runs one operation of the product's issue tracker (docs/tracker/tracker-contract.md). The tracker
+# is named in the product's factory.properties, as committed on main; without it, it is `none`.
+set -euo pipefail
+FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
+die() { echo "tracker: $*" >&2; exit 2; }
+op=${1:-}
+case "$op" in
+  name) [ $# = 2 ] || die "usage: tracker name <product-dir>" ;;
+  items|read|write|move|comment|comments) [ $# -ge 2 ] || die "usage: tracker $op <product-dir> [args...]" ;;
+  publish) [ $# = 4 ] || die "usage: tracker publish <product-dir> <story> <dir>" ;;
+  plan) [ $# = 3 ] || die "usage: tracker plan <product-dir> <story>" ;;
+  sync) [ $# = 2 ] || die "usage: tracker sync <product-dir>" ;;
+  *) die "usage: tracker name <product-dir> | tracker <items|read|write|move|comment|comments> <product-dir> [args...]
+       | tracker publish <product-dir> <story> <dir> | tracker plan <product-dir> <story> | tracker sync <product-dir>" ;;
+esac
+PRODUCT="$(cd "$2" && pwd)"; shift 2
+
+. "$FACTORY_HOME/bin/lib/properties.sh"
+props_load "$PRODUCT" || exit 2
+tracker=$(props_get tracker none '^[a-z0-9-]+$') || exit 2
+[ "$tracker" = none ] || [ -d "$FACTORY_HOME/trackers/$tracker" ] \
+  || die "factory.properties: unknown tracker '$tracker' (no trackers/$tracker/)"
+[ "$op" = name ] && { echo "$tracker"; exit 0; }
+[ "$tracker" != none ] || die "$PRODUCT has no tracker (factory.properties: tracker=)"
+[ -n "${PROPS[tracker.project]:-}" ] || die "factory.properties: tracker=$tracker needs tracker.project"
+project=$(props_get tracker.project '' '^[A-Za-z0-9._/-]+$') || exit 2
+
+# state: runs/tracker/<product>/, the product named as bin/sandbox names it
+common=$(git -C "$PRODUCT" rev-parse --path-format=absolute --git-common-dir)
+product=$(basename "$(dirname "$common")"); product=${product,,}; product=${product//[^a-z0-9._-]/-}
+TRACKER_STATE="$FACTORY_HOME/runs/tracker/$product"; mkdir -p "$TRACKER_STATE"
+
+export PRODUCT TRACKER_PROJECT=$project TRACKER_STATE
+case "$op" in publish|plan|sync) ;; *) exec "$FACTORY_HOME/trackers/$tracker/$op.sh" "$@" ;; esac
+
+# publish, plan and sync are the factory's own, built on the six scripts: bin/lib/tracker/<op>.sh
+. "$FACTORY_HOME/bin/lib/task.sh"; . "$FACTORY_HOME/bin/lib/state.sh"
+t() { "$FACTORY_HOME/trackers/$tracker/$1.sh" "${@:2}"; }
+. "$FACTORY_HOME/bin/lib/tracker/$op.sh"
+

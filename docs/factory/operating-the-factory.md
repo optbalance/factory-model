@@ -9,7 +9,7 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 | Job | Command | Status |
 |---|---|---|
 | Start the orchestrator | `bin/start <harness>` | ✓ |
-| Specify and plan work | skills `spec`, then `plan`, in a session started with `bin/start` in the product repo | ✓ |
+| Specify and plan work | skills `spec`, then `plan`, in a session started with `bin/start` in the product repo; with a tracker they write to the board | ✓ |
 | Check the factory layout | `bin/check-factory` | ✓ |
 | Test the guards | `guards/test.sh` | ✓ |
 | Build or rebuild a product's worker image | `bin/build-worker <product-dir> [harness...]` | ✓ |
@@ -24,7 +24,11 @@ pieces fit together is in `docs/how-to/how-the-factory-works.md`.
 | Act on the forge's decisions: rework, clean up merged tasks | `bin/start bin/review sync [product-dir]` | ✓ (GitHub forge untested on GitHub) |
 | Send remarks back to the implementers | `bin/start bin/rework <task-run-dir>...` (`bin/review` calls it) | ✓ |
 | One forge operation (debugging) | `bin/forge <name\|remote> <product-dir>`, `bin/forge <submit\|status\|remarks\|merge> <product-dir> <task-run-dir>` | ✓ |
-| Run a spec's tasks to merge-ready branches | skill `orchestrate`, in a session started with `bin/start` in the product repo | ✓ |
+| Run a spec's tasks to merge-ready branches | skill `orchestrate`, in a session started with `bin/start` in the product repo (without a tracker) | ✓ |
+| Work from the board: plan, run, move cards (section 7) | `bin/start bin/tracker sync <product-dir>`, from a timer or by hand | ✓ (Linear) |
+| Plan one story now, headless (debugging) | `bin/start bin/tracker plan <product-dir> <story>` | ✓ |
+| Write a directory of task files to a story | `bin/tracker publish <product-dir> <story> <dir>` | ✓ |
+| One tracker operation (debugging) | `bin/tracker name <product-dir>`, `bin/tracker <items\|read\|write\|move\|comment\|comments> <product-dir> [args...]` | ✓ |
 | Turn failures into factory fixes | skill `retro`, in a session started with `bin/start` in `~/factory-model` | ✓ |
 | Measure runs: cost, turns, fix rounds | `bin/metrics [--tsv] [dir...]` | ✓ |
 | Measure the factory with evals | `bin/eval` | postponed (Module 9) |
@@ -82,13 +86,15 @@ factory is mounted into the sandbox read-only at run time.
 
 Tasks never change dependencies. When a spec needs one:
 
-1. The planner lists it in `docs/specs/NNN-name/dependencies.md`.
+1. The planner lists it in `docs/specs/NNN-name/dependencies.md`. With a tracker, the headless
+   planner asks for it in its questions instead, and the story goes to `blocked`.
 2. You approve it and commit the change (build files, lockfiles) on the product's `main`.
-3. Rebuild the worker image (step 3), then run the tasks.
+3. Rebuild the worker image (step 3), then run the tasks. With a tracker, move the story back to
+   `todo`: it is planned again on the new `main`.
 
 ## 5. Run a batch of tasks
 
-Pick tasks whose `touches` don't overlap and that don't depend on each other (or whose
+Without a tracker; with one, `bin/tracker sync` does this (section 7). Pick tasks whose `touches` don't overlap and that don't depend on each other (or whose
 `depends_on` are merged). Their task files must be committed on the product's `main`.
 
 ```bash
@@ -146,11 +152,50 @@ the secrets.
 
 Run logs stay in `runs/` (gitignored); delete old ones when you no longer need them.
 
-## 7. Maintain the factory
+## 7. Work from the board (with a tracker)
+
+Once per product: name the tracker in `factory.properties` and set up the board's statuses
+(product contract, Step 6), sign the host in to the tracker (factory contract, Step 9), and add
+the product's timer line (factory contract, Step 10). From then on you work on the board; the
+timer runs `bin/tracker sync` every few minutes, and each pass acts on what changed:
+
+| You | The factory, on the next pass |
+|---|---|
+| Write a story (status `open`), or have the `spec` skill write it | nothing: `open` is yours |
+| Move the story to `todo` | plans it headless: tasks on the story and `refined`, or questions as a comment and `blocked` |
+| Answer in comments (on the story or its tasks), move it back to `todo` | plans it again with your comments; a task that stays keeps its id and is updated, a dropped one is `canceled` |
+| Move the story to `in-progress` | runs its tasks, at most 3 at a time, by `depends_on` and `touches`; each goes `in-progress`, then `in-review` with the pull request's link, or `blocked` with the reason |
+| Review the pull request: merge, request changes, or close | `done`; a rework (`in-progress`, then `in-review` again); or `blocked` |
+| Edit a `blocked` task or comment on it, move it to `todo` | runs it again from `main`, with your comments; the earlier attempt is kept as `abandoned.patch` |
+| Move a task to `canceled` | leaves it; the story is `done` when every task is `done` or `canceled` |
+
+Rules of the board:
+
+- **Code remarks go in the pull request**, not in tracker comments (section 6).
+- **Moving a card to `done` does nothing.** A task is done when its commit is on `main`.
+- **An edit to a running task doesn't reach it.** It runs from the copy taken when it started;
+  edit it once it's `blocked`.
+- **Every comment the factory posts starts with `🏭 factory`.** Never start one of yours that way:
+  the factory skips such comments.
+- **After a reboot, do nothing.** A plan, batch or rework the reboot killed runs again on the
+  next pass, without a card moving.
+
+Where to look when something seems stuck:
+
+- the timer's log, `runs/sync-<product>.log`: a dated line for each thing a pass did;
+- a plan: `runs/plan-<story>/<n>/` (`brief.md` is what the planner was given, `planner.log`,
+  `plan/` the task files or `QUESTIONS.md`);
+- a task: `bin/review status ~/projects/<product>`, and `bin/collect` on its run dir;
+- run a pass by hand: `bin/start bin/tracker sync ~/projects/<product>`. A second pass while one
+  runs exits at once; so does `bin/review sync` while another runs.
+
+To pause a product, comment out its timer line. Runs already started finish; nothing new starts.
+
+## 8. Maintain the factory
 
 | When | Command |
 |---|---|
 | After pulling factory changes | `bin/check-factory`, then `guards/test.sh` |
 | After changing a guard | `guards/test.sh`, with a new allow case and block case |
 | After changing a `Containerfile` | `bin/build-worker` for each product |
-| A token expires (Claude Code: yearly) | generate a new one, replace it in `~/.config/factory/env`, restart through `bin/start` |
+| A token expires (Claude Code: yearly) | generate a new one, replace it in `~/.config/factory/env`, restart through `bin/start` (a timer picks it up on its next pass) |

@@ -9,6 +9,7 @@ else
   RUN=$(ls -d "$FACTORY_HOME"/runs/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]/ 2>/dev/null | tail -1)
   [ -n "$RUN" ] || { echo "collect: no fan-out run in $FACTORY_HOME/runs" >&2; exit 2; }
 fi
+. "$FACTORY_HOME/bin/lib/lock.sh"
 RUN=${RUN%/}; [ -d "$RUN" ] || { echo "collect: $RUN is not a directory" >&2; exit 2; }
 
 # section <file> <heading>: the markdown section whose heading starts with <heading>, indented
@@ -32,10 +33,13 @@ for d in "${dirs[@]}"; do
                           else next="reviewer still has findings after the last round: ${last_review:-no review file}"; fi ;;
     green/*)              next="the review failed: see $d/run-task.log" ;;
     red/*)                next="verify failed: $d/verify.log" ;;
-    *)                    next="no result yet (still running, or killed): $d/run-task.log" ;;
+    *)                    if run_alive "$d"; then next="running: $d/run-task.log"
+                          else next="stopped without a result (killed, or a reboot): $d/run-task.log"; fi ;;
   esac
   [ -f "$d/head.log" ] && next="$next; $(cat "$d/head.log")"
-  [ -d "$d/rework.lock" ] && next="rework of your remarks running: $(ls "$d"/rework-*.log 2>/dev/null | sort -V | tail -1 || true)"
+  run_alive "$d" && ls "$d"/user-review-*.md >/dev/null 2>&1 \
+    && next="rework of your remarks running: $(ls "$d"/rework-*.log 2>/dev/null | sort -V | tail -1 || true)"
+  rework_interrupted "$d" && next="rework stopped before it finished (a reboot?); bin/review sync runs it again"
 
   echo; echo "== $id: $status / $verdict"
   echo "next:   $next"

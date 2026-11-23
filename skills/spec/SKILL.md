@@ -1,6 +1,6 @@
 ---
 name: spec
-description: Interview the user about a feature or change and write it down as a spec in the product repo (docs/specs/NNN-name.md). Use when the user wants to specify work before it is planned into tasks. Asks questions; writes no code.
+description: Interview the user about a feature or change and write it down as a spec, in the product repo (docs/specs/NNN-name.md) or, when the product uses an issue tracker, as a story on its board. Use when the user wants to specify work before it is planned into tasks. Asks questions; writes no code.
 ---
 
 # Spec: from an idea to a written spec
@@ -10,13 +10,19 @@ whom, and where its edges are. The `plan` skill turns the spec into task files l
 headless agents implement them without being able to ask anything. So every question about
 behavior must be answered here, by the user, or be listed as open.
 
-Work in the product repository's root. You write one file, the spec. No code, no task files, no
-build or dependency changes.
+Work in the product repository's root. You write one spec. No code, no task files, no build or
+dependency changes.
+
+**Where the spec goes:** `"$FACTORY_HOME/bin/tracker" name "$PWD"` prints the product's issue
+tracker. `none`: a file in `docs/specs/`. Anything else: a story on the board, and the steps below
+say what changes. If `FACTORY_HOME` isn't set, ask the user to start the session through the
+factory's `bin/start`.
 
 ## 1. Learn the ground
 
 Before asking anything, read the product's `AGENTS.md` and the documents it points to, the
-existing specs in `docs/specs/`, and the code the feature will touch. Don't ask what the code
+existing specs in `docs/specs/` (with a tracker: the stories, `"$FACTORY_HOME/bin/tracker" items
+"$PWD"`, and the bodies of related ones with `read <key>`), and the code the feature will touch. Don't ask what the code
 can answer; ask what only the user can decide.
 
 ## 2. Interview
@@ -59,6 +65,17 @@ Feature-level checks the user will make.
 Anything still undecided, or "none".
 ```
 
+**With a tracker,** write the same sections to a file outside the product repo, without the
+`# NNN: Title` line (the title is the story's name), and create the story:
+
+```bash
+f="$FACTORY_HOME/runs/spec-<name>.md"          # the body: ## Goal ... ## Open questions
+"$FACTORY_HOME/bin/tracker" write "$PWD" - - "<Title>" < "$f"     # prints the story's key
+```
+
+The story starts in `open`. To change it after the user's feedback, write it again by its key:
+`write "$PWD" <key> - "<Title>"`. Never edit it once the user has moved it to `todo`.
+
 Write decisions, not discussion: "returns 404 when the id is unknown", not "we talked about
 404". Name existing files, types and functions where they matter. Keep it as short as the
 feature allows.
@@ -68,3 +85,7 @@ feature allows.
 Show the user the path and the decisions you filled in yourself. Don't commit: the spec is
 committed together with its task files once the user has approved the plan. The next step is
 the `plan` skill on this spec.
+
+With a tracker, show the story's key and title instead. Nothing is committed. Next, the user
+either moves the story to `todo`, and the factory plans it headless, or runs the `plan` skill on
+it to plan it in a conversation.

@@ -15,20 +15,10 @@ case "$op" in
 esac
 PRODUCT="$(cd "$2" && pwd)"
 
-# factory.properties: parsed, never sourced. It is product content, and this runs on the host.
-forge=local; remote=origin; n=0
-while IFS= read -r line || [ -n "$line" ]; do
-  n=$((n + 1)); line=${line%%#*}
-  line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
-  [ -n "$line" ] || continue
-  [[ $line =~ ^([a-z.]+)[[:space:]]*=[[:space:]]*([A-Za-z0-9._-]+)$ ]] \
-    || die "factory.properties line $n: expected key=value (letters, digits, . _ -)"
-  case "${BASH_REMATCH[1]}" in
-    forge)        forge=${BASH_REMATCH[2]} ;;
-    forge.remote) remote=${BASH_REMATCH[2]} ;;
-    *)            die "factory.properties line $n: unknown key ${BASH_REMATCH[1]}" ;;
-  esac
-done < <(git -C "$PRODUCT" show main:factory.properties 2>/dev/null || true)
+. "$FACTORY_HOME/bin/lib/properties.sh"
+props_load "$PRODUCT" || exit 2
+forge=$(props_get forge local '^[a-z0-9-]+$') || exit 2
+remote=$(props_get forge.remote origin '^[A-Za-z0-9._-]+$') || exit 2
 [ -d "$FACTORY_HOME/forges/$forge" ] || die "factory.properties: unknown forge '$forge' (no forges/$forge/)"
 case "$op" in name) echo "$forge"; exit 0 ;; remote) echo "$remote"; exit 0 ;; esac
 

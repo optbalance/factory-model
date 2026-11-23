@@ -9,18 +9,21 @@ The big picture in diagrams: which directories exist, where things run, and what
 
 ```
 ~/factory-model/                 THE FACTORY: how work is done (this repo)
-├── bin/                         scripts: start, sandbox, build-worker, agent-run, run-task, fan-out, collect
+├── bin/                         scripts: start, sandbox, build-worker, agent-run, run-task, fan-out, collect, review, tracker, ...
 ├── config/                      routing.json (role → harness + model), sandbox-env (allowed env vars)
 ├── roles/ skills/ guards/       role prompts, skills, guard scripts
 ├── sandbox/Containerfile        factory base layer of the worker image
 ├── adapters/<harness>/          everything harness-specific, incl. that harness's image layer
+├── forges/<forge>/              everything specific to a git host (local, github)
+├── trackers/<tracker>/          everything specific to an issue tracker (linear)
 └── runs/<run>/<task>/           logs of each run: briefs, calls.log, verify.log, status, review
 
 ~/projects/<product>/            THE PRODUCT: what is being built (its own repo)
 ├── AGENTS.md                    product knowledge for agents
 ├── scripts/verify               the one health check (exit 0 = healthy)
 ├── toolchain.Containerfile      the image the product builds and tests in
-├── docs/specs/                  specs and task files
+├── factory.properties           optional: its forge and its issue tracker
+├── docs/specs/                  specs and task files (without a tracker)
 └── .git/                        the product's history, shared by all of its worktrees
 
 ~/projects/<product>-wt/         THE WORKTREES: one checkout per task in progress
@@ -43,8 +46,8 @@ product repo so they never appear inside it. Each one is deleted after you merge
 | Lives | For good | For good | Until the task is merged |
 
 **The contract between factory and product** is the only thing the factory knows about a product:
-`AGENTS.md`, `scripts/verify`, `docs/specs/` and `toolchain.Containerfile` (holding every
-dependency `main` declares).
+`AGENTS.md`, `scripts/verify`, `docs/specs/` (or a tracker), `toolchain.Containerfile` (holding
+every dependency `main` declares), and `factory.properties` naming its forge and tracker.
 
 ---
 
@@ -200,6 +203,49 @@ tasks until the story's tasks are merged. Three rules hold for every task:
   branches; the factory's scripts (never an agent) may push them to the product's forge for your
   review, and you decide what reaches `main`.
 
+### Every story, from the board
+
+With an issue tracker (`factory.properties`), the board replaces the session: a story's body is
+the spec, a task's body is its task file, and your approvals are card moves. A timer runs
+`bin/tracker sync`; each pass reads the board and starts what's due, in the background, and the
+next pass reports how it ended. Inside each task it's the same `fan-out` and `run-task` as above.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor You
+  participant Board as Tracker<br/>(stories, tasks)
+  participant Sync as bin/tracker sync<br/>(host, every few minutes)
+  participant Plan as Planner<br/>(sandbox)
+  participant Run as fan-out + run-task<br/>(host, sandboxes)
+  participant Forge as Forge<br/>(pull requests)
+
+  You->>Board: write a story, move it to todo
+  Sync->>Plan: the story, its current tasks, your comments
+  alt questions
+    Plan-->>Sync: QUESTIONS.md
+    Sync->>Board: comment, story: blocked
+    You->>Board: answer in comments, move it to todo
+  else tasks
+    Plan-->>Sync: task files
+    Sync->>Board: one task per file, story: refined
+  end
+  You->>Board: read the tasks, move the story to in-progress
+  loop until every task is done or canceled
+    Sync->>Run: tasks whose depends_on are merged, by touches, at most 3
+    Sync->>Board: task: in-progress
+    Run->>Forge: green + approve: pull request
+    Sync->>Board: task: in-review, with the link (or blocked, with the reason)
+    You->>Forge: merge, request changes, or close
+    Sync->>Run: changes requested: rework
+    Sync->>Board: merged: task done (closed: blocked)
+  end
+  Sync->>Board: story: done
+```
+
+The rules above hold here too, plus two: whether a task is merged is decided by git, never by its
+card; and a plan, batch or rework that a reboot killed runs again on the next pass.
+
 ### Inside one task (`bin/run-task`)
 
 ```mermaid
@@ -226,7 +272,9 @@ except what's in the worktree and the run directory.
 
 | Artifact | Where | Kept |
 |---|---|---|
-| Spec, task files | product: `docs/specs/` | yes, on `main` |
+| Spec, task files | product: `docs/specs/`; with a tracker, its stories and tasks | yes, on `main`, or in the tracker |
+| Plans made from the board: `brief.md`, `plan/` (task files or `QUESTIONS.md`), `planner.log` | factory: `runs/plan-<story>/<n>/` | gitignored, local history |
+| What the factory remembers about the board: run dirs per item, comments taken, exported tasks | factory: `runs/tracker/<product>/` | gitignored; needed between passes |
 | Code changes, `REPORT.md` | worktree, branch `factory/<id>` | merged by you, or dropped |
 | Briefs, `calls.log`, `verify.log`, `status`, `verdict`, `diff.patch`, `review-<n>.md`, a copy of `REPORT.md`, `task`, `worker`; from `fan-out`: `run-task.log`, `worktree`, and `build-worker.log` per run; from your reviews: `user-review-<n>.md`, `rework-<n>.md` and `rework-<n>.log`, `forge-state` | factory: `runs/<run>/<id>/` | gitignored, local history |
 | Approved dependency changes | product: build files and lockfiles, plus `docs/specs/NNN-name/dependencies.md` | yes, on `main` |

@@ -30,8 +30,10 @@ forge.remote=origin   # the remote submit pushes to (not used by local)
 ```
 
 `bin/forge` reads it from `main`, so a branch can't change where its own review goes. It parses
-the file and never sources it: only `key=value` lines with values of letters, digits, `.`, `_`
-and `-`, comments and blank lines. An unknown key or forge stops it. The file never holds
+the file and never sources it (`bin/lib/properties.sh`): `key=value` lines, comments and blank
+lines. It reads only its own keys and ignores the others, so other modules add keys without
+changing it. `forge` must be lowercase letters, digits and `-`, `forge.remote` letters, digits,
+`.`, `_` and `-`; any other value, or an unknown forge, stops it. The file never holds
 credentials or machine paths; how this machine signs in to the forge belongs to the machine
 (factory contract).
 
@@ -119,7 +121,8 @@ With a throwaway product whose remote is a local bare repo (`git config
 url.<bare-repo>.insteadOf <forge URL>`), and the forge's CLI replaced by a stub that logs its
 calls:
 
-1. `bin/forge name` reads `factory.properties` from `main`, and stops on an unknown key or forge.
+1. `bin/forge name` reads `factory.properties` from `main`, ignores keys it doesn't use, and stops
+   on an unknown forge.
 2. `submit.sh` pushes and opens the review; a second call updates it; a branch someone else
    pushed is refused; unpushed `main` commits are refused.
 3. `status.sh` gives `changes-requested` once per request, and not for discussion (someone

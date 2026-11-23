@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Run a planned spec's task files through the factory in batches (bin/fan-out, bin/collect), triage the results, and bring the user only tasks ready for review, questions and escalations; after the user's review, sync it (bin/review sync). Use after the plan skill, in the product repo. Never merges.
+description: Run a planned spec's task files through the factory in batches (bin/fan-out, bin/collect), triage the results, and bring the user only tasks ready for review, questions and escalations; after the user's review, sync it (bin/review sync). Use after the plan skill, in the product repo, for a product without an issue tracker. Never merges.
 ---
 
 # Orchestrate: from task files to merge-ready branches
@@ -17,10 +17,16 @@ You may commit to `main` only edited task files (step 4), and append to
 `$FACTORY_HOME/docs/factory-log.md`. The product's forge is `"$FACTORY_HOME/bin/forge" name
 "$PWD"`: `local`, or a git host such as `github`.
 
+**Not with an issue tracker.** If `"$FACTORY_HOME/bin/tracker" name "$PWD"` isn't `none`, the
+board runs the product's stories: `bin/tracker sync`, from a timer, plans, runs, triages to
+`blocked` and moves the cards, and running batches beside it would start the same tasks twice.
+Tell the user so, point them to the board (`blocked` items carry the factory's comment) and to
+`$FACTORY_HOME/docs/factory/operating-the-factory.md`, section 7, and stop.
+
 ## 1. Read the plan
 
-Read the spec, its `docs/specs/NNN-name/tasks/*.md` (the frontmatter's `depends_on` and
-`touches`) and `docs/specs/NNN-name/dependencies.md`.
+Read the spec, its `docs/specs/NNN-name/tasks/*.md` (their `depends_on:` and `touches:`
+lines) and `docs/specs/NNN-name/dependencies.md`.
 
 - Every dependency change listed there must be on `main` already. If one isn't, stop and tell
   the user; no task runs before it lands.

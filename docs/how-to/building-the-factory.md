@@ -109,10 +109,11 @@ factory-model/
 │   └── sandbox-env            # env vars allowed into the sandbox
 ├── sandbox/
 │   └── Containerfile          # factory base layer of the worker image, FROM a product's toolchain image
-├── roles/                     # role prompts for headless roles: implementer.md, reviewer.md, scout.md
+├── roles/                     # role prompts for headless roles: implementer.md, reviewer.md, scout.md, planner.md
 ├── skills/                    # Agent Skills (SKILL.md): spec, plan, orchestrate, retro
 ├── guards/                    # neutral guard scripts + their tests
-├── bin/                       # start, sandbox, build-worker, agent-run, run-task, fan-out, collect, metrics, forge, rework, review, eval, check-product, check-factory
+├── bin/                       # start, sandbox, build-worker, agent-run, run-task, fan-out, collect, metrics, forge, tracker, rework, review, eval, check-product, check-factory
+│   └── lib/                   # helpers the scripts source: env.sh (secrets), properties.sh (factory.properties), state.sh (state files), lock.sh (is a run alive), task.sh (task fields), tracker/ (publish, plan, sync)
 ├── adapters/
 │   ├── pi/
 │   │   ├── Containerfile      # Pi layer of the worker image
@@ -145,6 +146,8 @@ factory-model/
 │   ├── state.sh               # per-task forge state, sourced by the forge scripts
 │   ├── local/                 # submit.sh, status.sh, remarks.sh, merge.sh, discard.sh: review in bin/review
 │   └── github/                # the same four, through the gh CLI; lib.sh
+├── trackers/                  # where stories and tasks live, optional (Module 11)
+│   └── linear/                # the six scripts through Linear's GraphQL API, stories as projects, tasks as issues; lib.sh
 ├── templates/                 # task.md, product AGENTS.md, verify, toolchain.Containerfile (examples, copied by hand)
 ├── runs/                      # run logs (gitignored)
 └── docs/
@@ -1680,12 +1683,13 @@ agent can finish and verify on its own. Task files are the factory's work orders
 `templates/task.md`:
 
 ```markdown
----
+# CSV export endpoint
+
 id: 004-02-csv-export
 spec: docs/specs/004-reporting.md
 depends_on: []
-touches: [src/reports/, src/api/export.ts]   # used to spot parallel conflicts
----
+touches: [src/reports/, src/api/export.ts]
+
 ## Goal
 One or two sentences.
 ## Context
@@ -1697,6 +1701,13 @@ Files to read first. Relevant decisions. What already exists.
 ## Report
 Write REPORT.md at the worktree root: what changed, decisions made, open questions, anything left undone.
 ```
+
+The heading names the task in a few words (its title in an issue tracker). **The four lines
+after it are the task's fields**, each on a line of its own and starting with
+its key: no frontmatter and no separators, so the file reads the same in an editor, in a pull
+request and in an issue tracker (Module 11). `touches` is what spots parallel conflicts. Scripts
+and skills find a field by the first line starting with its key; lists are comma-separated, the
+`[ ]` optional.
 
 **Skills** in the Agent Skills format (`skills/<name>/SKILL.md` with `name` and `description`
 frontmatter), which Pi and many other harnesses support:
@@ -1979,7 +1990,8 @@ echo "Results: $FACTORY_HOME/bin/collect $RUN"
 `run-task` itself stays on the host. Every agent call and every verify run inside it goes
 through `bin/sandbox`, so each worktree gets its own isolated sandbox. Task files have to be
 committed on `main` before fan-out, so each worktree contains its own copy. That copy is the
-path the agent is given, because it's the only one mounted in the sandbox.
+path the agent is given, because it's the only one mounted in the sandbox. (Module 11 replaces
+this with a copy of the task next to the run dir, so a task can also come from outside the repo.)
 
 `fan-out` checks the whole batch before it starts anything: every task file is committed on
 `main`, no id appears twice, and no branch `factory/<id>` or worktree for it is left over from an
@@ -2509,7 +2521,10 @@ rewriting them for another model only loses detail. The implementer reads your w
      own pull request goes.
    - **Parsed, never `source`d:** sourcing would run product-repo content as code on the host,
      outside the sandbox, and agents write to the product repo. A strict parser accepts only
-     `key=value` lines, comments and blank lines, and rejects unknown keys and unknown forges.
+     `key=value` lines, comments and blank lines (`bin/lib/properties.sh`, shared with
+     Module 11). The parser only parses: each reader asks for its own keys with a default and a
+     value pattern, and ignores the rest, so a new module adds keys without touching the others.
+     `bin/forge` stops on a value outside its pattern and on an unknown forge.
    - **No credentials or machine paths.** The product repo is shared between machines and
      people; how this machine authenticates to the forge belongs to the machine (factory
      contract): a `git push` and the forge's CLI that already work on the host.
@@ -2587,7 +2602,7 @@ rewriting them for another model only loses detail. The implementer reads your w
 
 4. **`bin/rework <run-dir>...`**, the counterpart of `fan-out` for existing worktrees: for each
    task, `remarks.sh`, then `run-task --rework` in the background (a lock in the run dir skips a
-   task whose rework is already running; no new remarks skips it too), wait for all, then
+   task that is running already; no new remarks skips it too), wait for all, then
    `submit.sh` for each one that ended green, even if the AI reviewer still objects (its last
    review shows in `bin/review` and the pull request). The output goes to `rework-<n>.log`.
    - The agents need the secrets, so it refuses to start unless it runs under `bin/start`
@@ -2644,7 +2659,11 @@ rewriting them for another model only loses detail. The implementer reads your w
      - anything else: printed.
 
      It exits 1 when something needs you: a red `main`, a `main` it couldn't update, or a
-     rework that couldn't start.
+     rework that couldn't start. It also exits 1, saying so, when another `bin/review sync` or an
+     approve in `bin/review` is running for the product: both hold a lock per product
+     (`factory-review.lock` in the product's git dir) while they merge, verify `main` and clean
+     up, so a timer's pass (Module 11) and you can't do it to the same task at once. A rework it
+     starts in the background doesn't hold the lock.
 
      There are no webhooks to a local machine, so something has to run `sync`: you, or
      orchestrate's loop. Later a host timer (cron, a systemd timer) can, which keeps it the same
@@ -2721,7 +2740,9 @@ by you, including one round of your own remarks, on the local forge and on GitHu
 
 ## Module 11: Issue tracker, where the board drives the factory
 
-**Status:** designed, not built. The contract is `docs/tracker/tracker-contract.md`.
+**Status:** built, and tested against a stub tracker and stub agents; not yet run end to end on
+Linear with a real product and real agents. The contract is
+`docs/tracker/tracker-contract.md`.
 
 **Goal:** you work on a board, not in a session. You write or approve a story, approve the tasks
 the planner made, and merge the pull requests; the factory does everything between those moves.
@@ -2754,7 +2775,7 @@ you:      review the pull request (Module 10)
           ├─ request changes ─► rework                                   task: in-progress
           ├─ merge ─► verify main, clean up                              task: done
           └─ close ─► comment                                            task: blocked
-factory:  every task done or dropped                                    story: done
+factory:  every task done or canceled                                   story: done
 ```
 
 The statuses, and exactly who moves an item along which transition, are in the contract, Steps 2
@@ -2765,27 +2786,35 @@ and 3. Your approvals are column moves: `open` → `todo` approves the story, `r
 
 1. **`factory.properties`: which tracker a product uses** (product contract, Step 6):
    `tracker=none|<name>`, `tracker.project=<id>`, and `tracker.parent-type` and
-   `tracker.child-type` where the tracker has issue types. `bin/forge`'s parser moves into a
-   shared helper that `bin/tracker` uses too, and accepts `/` in `tracker.project`.
+   `tracker.child-type` where the tracker has issue types. Read with `bin/forge`'s parser,
+   `bin/lib/properties.sh` (built), with `bin/tracker`'s own patterns: `tracker.project` may
+   contain `/`. Keys only one tracker uses are checked by that tracker.
 
 2. **The tracker contract and `trackers/<name>/`.** A third kind of plug-in, next to `adapters/`
    and `forges/`. Six scripts (`items`, `read`, `write`, `move`, `comment`, `comments`), each
    doing one call or a few, with no logic of its own beyond mapping the tracker's statuses, keys
    and bodies to the contract's. `AGENTS.md` rule 2 covers `trackers/` the same way it covers
-   `forges/`.
+   `forges/`. `bin/tracker name|<op> <product-dir>` (built) reads the tracker's keys, exports
+   `PRODUCT`, `TRACKER_PROJECT` and `TRACKER_STATE`, and runs `trackers/<name>/<op>.sh`; nothing
+   else in the factory knows which tracker a product uses.
 
-3. **Headless planning: `roles/planner.md`.** The plan skill's steps 1, 2, 4 and 5 as a role
-   prompt for the `planner` role in `config/routing.json`, without the conversation. `sync` runs
-   it through `bin/agent-run`, in a detached worktree of `main` (removed afterwards), with a brief
-   holding the story's body, the current tasks' bodies (on a re-plan) and the comments taken from
-   the story and its tasks. It writes:
-   - `plan/<id>.md`, one task file per task, `story: <key>` in place of `spec:`, ids as in the
-     contract, Step 5;
-   - or `plan/QUESTIONS.md`, when the story leaves open a decision a task depends on. A planner
+3. **Headless planning: `roles/planner.md`** (built). The plan skill's steps 1, 2, 4 and 5 as a
+   role prompt for the `planner` role in `config/routing.json` (tools: read, search and write; no
+   shell), without the conversation. `sync` runs it through `bin/agent-run`, in a detached
+   worktree of `main` (removed afterwards), with a prompt holding the story's key, an `Output:`
+   directory in the plan's run dir (`runs/plan-<story>/<n>/plan/`), and the sections `## Story`
+   (its body), `## Current tasks` (on a re-plan, their bodies as they are now) and `## Comments`
+   (taken from the story and its tasks). It writes:
+   - `<id>.md`, one task file per task: a `# ` title, then `id:`, `story: <key>` (in place of
+     `spec:`), `depends_on:` and `touches:`, ids as in the contract, Step 5. On a re-plan a task
+     that stays keeps its id, so `publish` updates it in place;
+   - or `QUESTIONS.md`, when the story leaves open a decision a task depends on. A planner
      that guesses instead produces tasks you have to reject, so the role says to ask.
 
-   `sync` copies `plan/` to the plan's run dir (`runs/plan-<story>/<n>/`) and publishes it, or
-   posts the questions. The planner never sees the tracker.
+   Its final answer (the decisions it made that the story didn't, and the tasks whose `touches`
+   overlap) goes to `planner.out.md`. `sync` publishes the plan and posts that answer on the
+   story, or posts the questions. The planner never sees the tracker. It doesn't call the scout:
+   it runs in a sandbox already, and reads the code itself.
 
    **Dependency changes.** The plan skill lands them on `main` before the tasks run (Module 4),
    which needs you. Until a task can change dependencies itself (a worker image built from the
@@ -2793,70 +2822,119 @@ and 3. Your approvals are column moves: `open` → `todo` approves the story, `r
    the planner lists them in `QUESTIONS.md` and the story goes to `blocked`: you land them on
    `main` and move it back to `todo`.
 
-4. **`fan-out` takes exported task files.** Today a task must be committed on `main`. With a
-   tracker, `sync` writes each task's body to its run dir, and `fan-out` copies it into the
-   worktree as `TASK.md`, left out of the commit like `REPORT.md`. The checks for a duplicate id,
-   an existing branch or worktree stay; "committed on `main`" applies only to a path in the
-   product repo. `run-task`, the reviewer and `bin/rework` read the task from the run dir's copy
-   as they do now, so they don't change.
+4. **`fan-out` takes exported task files** (built). A task file is a path in the product repo,
+   committed on `main`, as before, or an absolute path to a file outside it: `sync` writes each
+   task's body to `<id>.md` and passes that. Either way `fan-out` copies the task to
+   `runs/<timestamp>/<id>.md`, next to the task's run dir, and `run-task` gets that copy, which
+   also takes the absolute path. The copy is what the task runs from, so an edit to the task in
+   the tracker or on `main` doesn't reach a running task. It is outside the run dir, which is the
+   only writable mount, so the agent can read it but can't change it, and it is not in the
+   worktree, so nothing has to keep it out of the commit. The checks for a duplicate id, an
+   existing branch or worktree stay. `bin/rework` reads the copy's path from the run dir's `task`
+   as before; the reviewer gets the same path.
 
-5. **`bin/tracker sync <product-dir>`: one pass over the board.** A script, not a skill (design
-   rule 2): the planner is the only model it calls, apart from the agents `fan-out` and
-   `bin/rework` already run. Under a per-product lock, in this order:
-   1. `bin/review sync` (Module 10), then for each task: rework started → `in-progress`; merged →
-      `done`; review closed → `blocked`, with a comment.
-   2. Each finished run of a task in `in-progress`: green / approve and submitted → `in-review`,
-      with the review's link; anything else → `blocked`, with `bin/collect`'s summary of it.
-   3. Each story in `todo` with no plan running: start the planner in the background (a story
-      that has tasks is a re-plan). Each finished plan: publish, then `refined`; or comment the
-      questions, then `blocked`.
+5. **`bin/tracker sync <product-dir>`: one pass over the board** (built,
+   `bin/lib/tracker/sync.sh`). A script, not a skill (design rule 2): the planner is the only
+   model it adds, apart from the agents `fan-out` and `bin/rework` already run. Run it through
+   `bin/start`, like `bin/rework`. Under a lock per product (`flock`; a second sync exits at once),
+   in this order:
+   1. `bin/review sync` (Module 10), with `REWORK_DETACH=1` so reworks start in the background
+      instead of holding the pass. If it fails, or `main` is red, no new task starts this pass.
+   2. Each task in `in-progress` or `in-review` that the factory started (it has a `run`): merged
+      (git, not the status) → `done`; a rework running → `in-progress`, with a comment; submitted
+      and waiting for you → `in-review`, with the review's link; review closed → `blocked`;
+      anything else (red, the AI reviewer objects, or the batch ended without running it) →
+      `blocked`, with `bin/collect`'s summary or the batch log's end.
+   3. Each story in `todo` with no plan running: `bin/tracker plan` in the background, detached
+      (`bin/lib/tracker/plan.sh`). It builds the planner's prompt (the story, the current tasks,
+      the comments not given to a planner yet), runs the planner (item 3), then publishes, posts
+      the planner's notes and moves the story to `refined`; or posts `QUESTIONS.md` and moves it
+      to `blocked`. A failed plan is posted too and goes to `blocked`, so sync never retries it in
+      a loop. The plan moves the story only if it is still `todo`. A story in `todo` whose tasks
+      have started isn't planned again: `publish` would cancel them.
    4. Each task in `todo` that has a branch or worktree from an earlier attempt (you moved it from
-      `blocked`): `bin/cleanup` (the work goes to `abandoned.patch`), and its comments since the
-      block go into the brief as `## Answers from the user`.
+      `blocked`): `bin/cleanup` (the work goes to `abandoned.patch`).
    5. Each story in `in-progress`: the batch. Tasks in `todo` whose `depends_on` are all merged
-      (git, not the status) or are `done` stories, with no `touches` overlapping a running task,
-      up to 3 running per product: write each to its run dir, `fan-out` them in the background,
-      then `in-progress`.
-   6. Each story in `in-progress` whose tasks are all `done` or `dropped`: `done`. `main` was
+      (git, not the status) or are `done` stories, with no `touches` overlapping a task in
+      `in-progress` or `in-review` (not merged yet, so its files would conflict) or one started
+      now, up to 3 in `in-progress` per product. Each is written to
+      `runs/tracker/<product>/tasks/<id>.md`, with the comments on it not taken yet appended as
+      `## Comments from the user` (on a retry, your answers), moved to `in-progress`, and the
+      batch goes to `fan-out` in the background with `FANOUT_RUN` set, so its run dir is known up
+      front; `runs/<timestamp>.exit` holds fan-out's exit code when it ends.
+   6. Each story in `in-progress` whose tasks are all `done` or `canceled`: `done`. `main` was
       verified when each task merged.
 
-   It keeps its own state next to the tracker's (contract, Step 6): `plan` (the running plan's run
-   dir) and `run` (a task's latest run dir). A second pass with nothing new on the board does
+   It keeps its own state next to the tracker's (contract, Step 6): `plan` (a story's latest plan
+   run dir) and `run` (a task's latest run dir). A second pass with nothing new on the board does
    nothing.
+
+   **Interrupted runs resume.** Whoever starts a background run takes an `flock` on its lock
+   file before starting it, and the run inherits the lock (`bin/lib/lock.sh`): a plan's
+   `running.lock`, a batch's `runs/<timestamp>.lock`, and each task's `running.lock`, held by
+   `fan-out` or `bin/rework` while the task runs. The kernel drops a lock when its holders die,
+   reboot included, so a run that is neither alive nor finished died. The next pass starts it
+   again, without moving anything: a story still in `todo` is planned again (the comments the
+   dead plan was given are still kept); a task still in `in-progress` is cleaned up and run again
+   from `main`, with a comment; a rework is run again with the same remarks (`bin/rework
+   --resume`, which `bin/review sync` calls for any product, with or without a tracker).
 
    **No model triage in this version.** Interactively, orchestrate rewrites a failed task's file
    and re-queues it once on its own (Module 7, step 4). Here every failure goes to `blocked` and
-   you decide: edit the task in the tracker and move it to `todo`, or drop it. Headless triage is
-   a later step, once the factory log shows which failures it could have fixed alone.
+   you decide: edit the task in the tracker and move it to `todo`, or cancel it. Headless triage
+   is a later step, once the factory log shows which failures it could have fixed alone.
 
-6. **Triggers.** `sync` is safe to run at any time, so anything can start it: you, a host timer
-   (cron, a systemd timer), or a webhook receiver on a host the tracker can reach (a VM or a
+6. **Triggers** (built: a crontab line). `sync` is safe to run at any time, so anything can start
+   it: you, a host timer, or a webhook receiver on a host the tracker can reach (a VM or a
    self-hosted CI runner). A receiver only checks the webhook's signature and runs `sync`; it never
    acts on the payload (contract, Step 7). None of this is in the factory: it's how the machine is
-   set up (factory contract). **Not supported:** ephemeral CI runners. Run dirs, worktrees, tracker
-   state and the implementer's session for a rework all live on the machine between passes.
+   set up. The timer is one crontab line per product, every 5 minutes, through `bin/start`
+   (factory contract, Step 10). Cron, not a systemd user timer: it runs after a reboot without a
+   login or linger, and works the same on macOS. A headless timer is also why the forge's token
+   goes in the secrets file (`GH_TOKEN`): `gh`'s default keyring is locked until you log in
+   (factory contract, Step 9). `sync` dates its own lines, so the log shows when each thing
+   happened, and an idle pass writes nothing. **Not supported:** ephemeral CI runners. Run dirs,
+   worktrees, tracker state and the implementer's session for a rework all live on the machine
+   between passes.
 
-7. **Skills.**
+7. **Skills** (built). Each checks `bin/tracker name` first.
    - **spec:** with a tracker, it ends with `bin/tracker write` of the story (it starts `open`)
      instead of a file in `docs/specs/`. That's the path for a story that isn't written yet: you
      talk it through, it lands on the board, and from there it's the same flow.
    - **plan:** with a tracker, step 6 runs `bin/tracker publish` instead of committing, and moves
      the story to `refined`. For a story you'd rather plan in a conversation than through `todo`.
+     It plans only a story in `open`, `blocked` or `refined` (in `todo` the factory is planning it),
+     writes the task files to `runs/plan-<story>-session/`, and never calls `comments`, which
+     would hide the comments from the headless planner.
    - **orchestrate:** with a tracker, it says the board and `sync` run the story, and stops.
-   - **retro:** also reads the comments of `blocked` items, from the run dirs where `sync` saved
-     them.
+   - **retro:** also reads the plans (`runs/plan-<story>/<n>/`: the brief with your comments,
+     the questions, the notes; several plans of one story are re-plans) and the copy each task ran
+     from (`runs/<run>/<id>.md`), whose `## Comments from the user` are your answers to a
+     `blocked` task. It never calls the tracker. A planner failure goes to `roles/planner.md`, like
+     a plan skill failure to the skill.
 
-8. **The first tracker.** Linear fits with no workaround: workflow states as columns, sub-issues,
-   "blocked by" relations, Markdown bodies and webhooks on the free plan (its free plan caps the
-   number of issues; check the current limit). GitHub Issues with a Projects board reuses the
+8. **The first tracker: Linear** (built, `trackers/linear/`). A story is a Linear *project*, its
+   body the project's content, its status one of the workspace's project statuses; a task is an
+   issue in that project, its status one of the team's workflow states. So stories and tasks sit
+   on separate boards, each with only the statuses that apply to it, a project's page shows its
+   tasks and their progress, and stories don't count against the free plan's issue cap. Name both
+   sets of statuses as in the contract's Step 2: project statuses in Settings → Projects →
+   Statuses (workspace-wide, free plan), the team's workflow in its settings. Keys: a project's
+   `slugId` (12 hex digits) and an issue's identifier (`NTG-12`). Linear reformats Markdown
+   (escapes, blank lines) but keeps lines, which is all the contract asks. Read a project's
+   comments through the top-level `comments` query: the project's own `comments` field comes back
+   empty. GitHub Issues with a Projects board reuses the
    forge's sign-in, but check first whether a board status change can trigger anything; if not,
    use labels as the statuses. Check every call against the tracker's official API docs when you
    build it, as for the forges.
 
-**Also changed:** docs: the product contract (Step 4, `docs/specs/` only without a tracker; Step 6, the tracker keys and the
-board's status names), the factory contract (tracker sign-in), `operating-the-factory.md` (working from the
-board), `how-the-factory-works.md` (the story → merge diagram with a tracker), the Module 0 tree
-and `bin/check-factory`. `AGENTS.md` already has the tracker rule and the contract's path.
+**Also changed:** docs: the product contract (Step 4, `docs/specs/` only without a tracker; Step
+6, the tracker keys and the board's status names), the factory contract (Step 9, tracker sign-in
+and signing in unattended; Step 10, the timer), `operating-the-factory.md` (section 7, working
+from the board, and the `bin/tracker` commands), `how-the-factory-works.md` (the story → merge
+diagram from the board, `forges/` and `trackers/` in the layout), the Module 0 tree and
+`bin/check-factory` (`trackers/`). `AGENTS.md` already has the tracker rule and the contract's
+path.
 
 ### Harness-specific steps
 
@@ -2887,7 +2965,7 @@ reviewing pull requests: no session, no git command.
 | 8 | Metrics: what each run cost and where the effort went |
 | 9 | Evals: routing and factory changes decided by numbers (postponed) |
 | 10 | Review and merge in one place, locally or on a forge, with your remarks sent back to the implementer |
-| 11 | The board drives the factory: stories and tasks in an issue tracker, your approvals as column moves (designed) |
+| 11 | The board drives the factory: stories and tasks in an issue tracker, your approvals as column moves |
 
 Adding another harness later means following the "harness-specific steps" of each module for it:
 an `adapters/<name>/Containerfile`, a guard wrapper, `adapters/<name>/run.sh` that meets the adapter contract, and

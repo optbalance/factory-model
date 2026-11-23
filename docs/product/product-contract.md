@@ -10,9 +10,9 @@ to the product. Everything here lives in the **product** repo.
 | 1 | git repo with a `main` branch | — | always |
 | 2 | `AGENTS.md` | `templates/AGENTS.md` | always |
 | 3 | `scripts/verify` | `templates/verify` | always |
-| 4 | `docs/specs/` | — | always |
+| 4 | `docs/specs/` | — | without an issue tracker |
 | 5 | `toolchain.Containerfile` | `templates/toolchain.Containerfile` | with `SANDBOX=docker` (default) or `podman` |
-| 6 | `factory.properties` | — | when you review on a forge such as GitHub |
+| 6 | `factory.properties` | — | when you review on a forge such as GitHub, or work from an issue tracker |
 | 7 | Commit on `main` and check | — | always |
 
 ---
@@ -95,6 +95,10 @@ docs/specs/004-reporting/tasks/004-02-csv-export.md    task NNN-TT-name: its id 
 Other files in `docs/specs/` (your own docs) are fine: the skills count only `NNN-*` names. Each
 task reaches `main` as one commit, `factory: <id>`.
 
+**With an issue tracker** (Step 6), stories and tasks live in the tracker instead: a story's
+body is the spec, a task's body its task file, and the factory writes nothing here. You don't
+need the directory then.
+
 **Template:** none.
 
 ## Step 5. `toolchain.Containerfile`
@@ -165,14 +169,20 @@ WORKDIR /
 
 ## Step 6. `factory.properties` (optional)
 
-**What:** which forge you review and merge the product's tasks on. Without the file, it's
-`local`: you review in your terminal with the factory's `bin/review`, and it merges into `main`.
+**What:** which forge you review and merge the product's tasks on, and which issue tracker, if
+any, holds its stories and tasks. Without the file, the forge is `local`: you review in your
+terminal with the factory's `bin/review`, and it merges into `main`; and there is no tracker: you
+work in a session, with the `spec`, `plan` and `orchestrate` skills.
 
 ```properties
 # factory.properties (the defaults are shown)
 forge=local          # local | github
 forge.remote=origin  # the remote the factory pushes task branches to (not used by local)
+tracker=none         # none | linear
+tracker.project=     # with a tracker: the team, project or board it reads (Linear: the team's key, ENG)
 ```
+
+### The forge
 
 With `forge=github`, every task that passes verify and the AI review is pushed as
 `factory/<id>` and gets a pull request, opened as you (your `git` and `gh` sign-in). GitHub
@@ -193,11 +203,35 @@ re-queued. Also:
   refuses to open one that would include commits only your local `main` has;
 - optionally, turn on "Automatically delete head branches" in the repository settings.
 
-Only these two keys. The file is read from `main` and parsed, never run, and never holds
-credentials or machine paths: it's shared by everyone who works on the product.
+### The tracker
 
-**Why:** the factory has to know where a finished task goes for your review. The forge's code
-lives in the factory (`forges/<name>/`); the product only names it.
+With `tracker=<name>`, you work from the board: you write a story and move it to `todo`, the
+factory plans it into tasks, you approve them by moving the story to `in-progress`, the factory
+runs them and submits each to the forge, and you merge. The flow and who moves what are in
+`docs/tracker/tracker-contract.md`, Steps 2 and 3, and in `docs/factory/operating-the-factory.md`.
+Also:
+
+- **Name the board's statuses** as the contract's Step 2 does, case and spaces aside (`In
+  progress` is `in-progress`). A story uses `open`, `todo`, `refined`, `in-progress`, `blocked`,
+  `done` and `canceled`; a task uses `todo`, `in-progress`, `blocked`, `in-review`, `done` and
+  `canceled`. Items in any other status are ignored. With Linear, a story is a project and a
+  task is an issue in it: name the workspace's project statuses (Settings → Projects →
+  Statuses) and the team's workflow states this way: rename or add (Linear's defaults have no
+  `Blocked`, and no `Open`, `Todo` or `Refined` project status). Extra ones such as `Backlog`
+  may stay; the factory ignores items in them.
+- **One `tracker.project` per product.** The factory reads every story in it. Two products
+  naming the same one would both plan and run each story (`docs/todo.md` lists a fix).
+- **Code remarks go in the forge's review**, never in tracker comments. Tracker comments answer
+  the planner's questions, or say what to change in a story or a blocked task.
+- the host signs in to the tracker, and a timer runs the factory's `bin/tracker sync` for the
+  product (factory contract, Steps 9 and 10).
+
+Only these keys. The file is read from `main` and parsed, never run, and never holds credentials
+or machine paths: it's shared by everyone who works on the product.
+
+**Why:** the factory has to know where a finished task goes for your review, and where your
+stories are. The forge's and the tracker's code live in the factory (`forges/<name>/`,
+`trackers/<name>/`); the product only names them.
 
 **Template:** none.
 

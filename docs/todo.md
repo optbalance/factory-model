@@ -4,13 +4,14 @@ Known issues and missing features that are worth solving but not urgent. One bul
 wrong, where (files), what goes wrong because of it, and a possible fix if known. Remove a bullet
 when it's fixed.
 
-- **Product identity is the repo directory's basename, so worker images can collide.** `bin/sandbox`
-  and `bin/build-worker` derive `<product>` from the basename of the product repo directory
-  (`~/projects/<product>`), not from its full path. Two products whose repos share a basename
-  (`~/projects/shop`, `~/work/shop`) both use the image `factory-worker-shop`, so building one
-  overwrites the other's, and tasks of one product run in the other's toolchain. Possible fix:
-  derive the name in one helper used by both scripts, from the basename plus a short hash of the
-  absolute repo path.
+- **Product identity is the repo directory's basename, so worker images can collide.** `bin/sandbox`,
+  `bin/build-worker` and `bin/tracker` derive `<product>` from the basename of the product repo
+  directory (`~/projects/<product>`), not from its full path. Two products whose repos share a
+  basename (`~/projects/shop`, `~/work/shop`) both use the image `factory-worker-shop`, so
+  building one overwrites the other's, and tasks of one product run in the other's toolchain;
+  they also share the tracker state `runs/tracker/shop/`, so one product's `comments.sh` takes
+  the other's comments. Possible fix: derive the name in one helper used by all three scripts,
+  from the basename plus a short hash of the absolute repo path.
 - **`bin/build-worker` never reuses its cache above the toolchain layer.** Each layer is a separate
   `docker build` whose `FROM` is the previous layer's tag. A fully cached build still produces a
   new image ID (two consecutive cached builds of `sandbox/Containerfile` on the same base gave
@@ -42,15 +43,16 @@ when it's fixed.
   Possible fix: document the host setup in Module 2, an AppArmor profile for `/usr/bin/bwrap`
   that grants `userns` (as Ubuntu ships for other tools in `/etc/apparmor.d/`), and have
   `bin/sandbox` fail with a clear message pointing to it.
-- **No headless planner step in `bin/run-task`, on purpose.** Planning happens once, interactively,
-  with the `plan` skill; the reviewed task file is the implementer's whole instruction, so there is
-  no `roles/planner.md` and nothing calls `agent-run planner` (the `planner` entry in
-  `config/routing.json` only records the model for interactive planning sessions). What could go
-  wrong: a cheap implementer may fail on approach (design) even with a good task file, burning fix
-  rounds. Add the step only if Module 9 evals show that, and after trying more concrete task files
-  first. Possible fix: `run-task` calls `agent-run planner` (read-only tools) before the
-  implementer, the planner writes `$rundir/approach.md`, and `run-task` appends it to `brief.md`;
-  then write `roles/planner.md`. Cost: one strong-model call per task.
+- **No per-task approach step in `bin/run-task`, on purpose.** A story is planned once into task
+  files, interactively (the `plan` skill) or headless from the tracker (`bin/tracker plan`,
+  `roles/planner.md`, routed as `planner`); after that the task file is the implementer's whole
+  instruction, and nothing plans the approach inside one task. What could go wrong: a cheap
+  implementer may fail on approach (design) even with a good task file, burning fix rounds. Add
+  the step only if Module 9 evals show that, and after trying more concrete task files first.
+  Possible fix: a new role, `roles/approach.md` with its own `approach` entry in
+  `config/routing.json` (read-only tools; not `planner`, which splits stories), that `run-task`
+  calls through `agent-run` before the implementer; it writes `$rundir/approach.md`, and
+  `run-task` appends it to `brief.md`. Cost: one strong-model call per task.
 - **Module 3's "Done when" provider switch is untested.** Only one provider and harness (Claude
   Code) is set up, so the check in `docs/how-to/building-the-factory.md` (Module 3, "Done when"):
   switch the implementer to another provider by editing only `config/routing.json`, and the same
@@ -93,6 +95,43 @@ when it's fixed.
   a throwaway GitHub repository, or with a real task: install `gh`, `gh auth login`, add
   `factory.properties` with `forge=github`, then follow Module 10's "Try it", including a squash
   merge and running `bin/review sync` twice.
+- **Task ids and branch names are unreadable when a tracker's story keys are opaque.** The tracker
+  contract (`docs/tracker/tracker-contract.md`, Step 5) builds a task id from its story's key:
+  `<story key, lowercased>-TT-short-name`, and the id names the branch (`factory/<id>`), the run
+  dir and the worktree. With Linear (`trackers/linear/`), a story is a project and its key is the
+  project's `slugId`, 12 hex digits, so ids read `defa851e4597-01-csv-export`: nothing in the
+  branch, the pull request or `bin/review` tells you which story it belongs to, and ids get long.
+  GitHub's numeric keys (`42-01-…`) have the same problem in a milder form. Possible fix, based on
+  what each tracker can give: let the tracker supply a short readable prefix per story, as a
+  capability in the contract (a fourth column of `items.sh`, say), from its own human key where
+  it has one (Jira's `ENG-12`, Linear's issue identifiers) or from a short slug of the story's
+  title plus enough of its key to stay unique (`csv-export-defa85`) where it hasn't; ids become
+  `<prefix>-TT-short-name`. Decide whether the prefix is fixed when the story is first planned (a
+  renamed story keeps its branches) and keep it in the tracker state.
+- **The factory uses the tracker as you, not as its own user.** The tracker contract
+  (`docs/tracker/tracker-contract.md`, Steps 5 and 7) has the factory sign in with your API key
+  or CLI login, so its comments and status moves carry your name. What goes wrong: on the board
+  you can't tell your moves from the factory's, and `comments.sh` can't skip the factory's own
+  comments by author: it relies on their first line, `🏭 factory`, so a comment of yours that
+  starts with that line is skipped too. Fix: give the factory a dedicated tracker
+  user (a bot or service account, or an OAuth app acting as itself, e.g. Linear's `actor=app`),
+  whose token goes in the secrets file instead of yours. `comments.sh` then skips comments by
+  that author, and the board shows who moved what. Check whether the tracker's free plan allows
+  an extra user or app.
+- **One tracker team can't serve several products.** `bin/tracker sync` scopes a product's board
+  by `tracker.project` alone (`docs/tracker/tracker-contract.md`, Step 1); for Linear that is a team
+  key, and `trackers/linear/items.sh` lists every project (story) linked to the team. Two products
+  whose `factory.properties` name the same team both see every story: each plans it against its
+  own repo, publishes tasks under it, and moves the same tickets back and forth. A Linear project
+  linked to two teams does the same for that one story. Nothing detects either case. Workaround
+  until fixed: one team per product. Possible fix: an optional per-tracker key, read only by
+  `trackers/<name>/` (e.g. `tracker.scope=<label>`: Linear keeps the team's projects carrying that
+  label; Jira a component; GitHub a label), so `items.sh` lists only that product's stories; a
+  story without it is never seen, so say so in sync's output or the docs. To catch the
+  misconfiguration, `bin/tracker sync` could refuse when another product on the same host uses
+  the same `tracker`, `tracker.project` and scope; across hosts, the planner's tasks or the
+  tracker state could record which product (repo URL) planned a story, and sync skip stories
+  planned by another.
 - **`run-task --rework`'s handling of your remarks against the AI reviewer is untested with real
   agents.** One real rework ran (shovel task 005, before the fix): the implementer applied the
   remark and wrote `Review answers`, then the reviewer, who didn't see the remarks, had it
@@ -207,3 +246,65 @@ when it's fixed.
   A cheaper step that can happen first, and that the rewrite reuses: move the repeated parts into
   `bin/lib/` (started with `bin/lib/env.sh`), one helper per concept (product, task paths, run
   dirs, routing).
+- **A story can't span several products, and planning one would need a star of planners.** Today
+  a story is planned against one product's repo (`bin/lib/tracker/plan.sh` runs one
+  `roles/planner.md` in one worktree; `bin/tracker sync <product-dir>`), but a story such as a
+  client/server feature needs tasks in several repos, while each task stays in one product (the
+  smallest change). What goes wrong: the user splits such stories by hand and repeats the
+  interface in each, and nothing checks the pieces fit. Prerequisites, designed but not built:
+  sync runs per board over the products the timer line lists (`bin/tracker sync <dir> <dir>...`),
+  one `factory` label opts a story in, a task file gets a `product:` field and lives on its
+  product's anchor team (`tracker.team`), each product gives a one-line `product.summary` in
+  `factory.properties` (the index) and a `## Peers` section in its `AGENTS.md` (each peer, server
+  or client, and where the interface is defined). Possible fix, the star: a root planner (new role,
+  e.g. `roles/story-planner.md`) gets the story, the index and the peers, reads only peers'
+  `AGENTS.md` and interface files, and writes either `QUESTIONS.md` or one brief per product: what
+  that product does, the interface decided exactly, and which product's tasks merge first. Then
+  `plan.sh` (on the host: a planner in a sandbox can't start another) runs today's
+  `roles/planner.md` once per brief, in parallel, each in its own product's worktree with its own
+  `AGENTS.md`, as now; one that finds the brief doesn't fit the code writes `QUESTIONS.md`. Tasks
+  are published only if every product planner wrote tasks; otherwise all questions go to the story
+  as one comment and it goes to `blocked`, and a re-plan reruns the whole star. Ids become
+  `<story>-<product>-TT-name`, unique across the story so cross-product `depends_on` works. With
+  only one product on the board, `plan.sh` skips the root. Not a recursive tree (a product planner
+  starting more planners): no planner would own the interfaces, a child can't push back on its
+  parent, client and server are each other's peers (cycles), and the cost is unbounded.
+  The alternative is one planner reading on demand: `plan.sh` puts a read-only snapshot of every
+  listed product's `main` (`git archive`) side by side in its workdir, the prompt holds the index,
+  `bin/agent-run` stops putting one product's `AGENTS.md` in the system prompt, and the planner
+  opens a peer's `AGENTS.md` and code only when the story needs it. Tradeoff: on demand is one
+  agent call per story and one mind sees both sides of every interface, but its context grows
+  with each product it opens and it needs the multi-repo workdir and the `agent-run` change; the
+  star costs one call per product plus the root, and a wrong brief costs a re-plan, but the root
+  holds only interfaces and each product planner one repo, with today's per-product setup
+  unchanged. On demand is cheaper for stories touching one or two products; the star wins when
+  stories touch many (microservices), and keeps each agent's context focused, which keeps its
+  tasks precise. Recommended: the star.
+- **The factory ignores the product's pipeline on a review.** A product's integration tests (a
+  client against its server) need network and the other side running, so they belong in the
+  forge's pipeline (GitHub Actions), never in `scripts/verify`, which stays offline and per repo
+  on purpose. But `forges/github/status.sh` (`docs/forge/forge-contract.md`, `status.sh` values)
+  reports only the review, never check results. What goes wrong: a task whose pipeline fails
+  shows `pending` or `approved`, the tracker moves it to `in-review` (`bin/lib/tracker/sync.sh`
+  step 2), you can approve it, and `bin/review` approve then fails on the forge's merge error
+  (branch protection), or merges red code where there's none. Nothing gets the failure back to
+  the implementer: you'd have to copy the log into a remark yourself. Possible fix, the same path as
+  your remarks: `status.sh` gains `checks-failed` (a required check failed), and reports
+  `pending` while required checks run on a review that is otherwise ready; a new forge script
+  `checks.sh` prints the failing checks (name, URL, the end of each log). A review with no
+  pipeline behaves as now, and how the pipeline is started (by you or on push) doesn't matter.
+  `bin/review sync` treats `checks-failed` like `changes-requested` (`bin/review`, the `rework`
+  list): it saves `checks.sh`'s output as the round's remarks and runs `bin/rework`, which
+  resumes the implementer's session; it pushes, and the pipeline runs again. On the board, sync
+  comments "Pipeline failed: <check>; rework started" and moves the task back to `in-progress`.
+  Cap it at 2 pipeline reworks per task (counted in the run dir, apart from your remarks'
+  rounds): a failure the task didn't cause (a flaky test, another product's red `main`, a
+  provider task not merged yet) would otherwise loop. After the cap the task goes to `blocked`
+  with the failing log posted, and the existing path applies: comment, then move it to `todo`. The
+  rework may also say under "Review answers" in `REPORT.md` that the failure isn't its change;
+  that still counts as a round. `bin/review` approve refuses to merge while required checks are
+  pending or failed and says which. The planner (`roles/planner.md`) lists a provider's task in a
+  consumer's `depends_on` across products when the consumer's pipeline tests against the
+  provider's `main` (see the star bullet above). Add `checks.sh` and the new status to the forge
+  contract, a stub check result to its Step 8 test, and the board's reaction to the operating
+  guide's "Work from the board" table.

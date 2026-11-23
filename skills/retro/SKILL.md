@@ -20,7 +20,13 @@ a fix may go.
   remarks, each one sent back to the implementer. Open `*.events.jsonl` only to answer a specific
   question (which file the agent read, which command failed).
 - The task files and specs of those runs, in the product repo (a task's run dir is named after
-  its id; `worktree` in it shows the product's path).
+  its id; `worktree` in it shows the product's path). The copy each task ran from is
+  `runs/<run>/<id>.md`; with a tracker, a `## Comments from the user` section in it means the
+  task was `blocked` and the user answered before it ran again.
+- With a tracker, the plans: `runs/plan-<story>/<n>/`. `brief.md` holds the story and the user's
+  comments the planner was given, `plan/` its task files or `QUESTIONS.md`, `planner.out.md` its
+  notes. Several plans of one story are re-plans: the comments in the later briefs say what the
+  user wanted changed. Questions the story already answered, and re-plans, are planner failures.
 - `docs/todo.md`: issues already known and postponed.
 - `bin/metrics runs/<run> ...` over the same runs: per task, its fix rounds, escalation,
   review rounds that asked for changes, turns, time and cost, with the most turns first.
@@ -35,8 +41,8 @@ failure by itself. For each, decide where its cause is, often in both places:
 - **product:** the spec or the product's `AGENTS.md` didn't say it, or a test was missing. The
   fix goes into the product (step 2's table).
 - **factory:** the AI reviewer approved what the user then rejected (the reviewer role missed
-  it), the `plan` skill didn't ask about something the spec left open, or the task template had
-  no place for it.
+  it), the `plan` skill or the planner role didn't ask about something the spec left open, or
+  the task template had no place for it.
 
 Add a log line, in factory terms, only for a factory cause. The remarks carry product details;
 never copy them into the factory.
@@ -67,7 +73,7 @@ Then pick the layer the fix goes into:
 | Agent did a procedure wrong or inconsistently | a skill or role prompt |
 | Agent did something that must *never* happen | a guard (plus a case in `guards/test.sh`) |
 | Bad code passed | a test, `scripts/verify`, or the reviewer role |
-| Task was badly scoped | the `plan` skill rules / task template |
+| Task was badly scoped | the `plan` skill and `roles/planner.md` rules / task template |
 | One model keeps failing one kind of task | `config/routing.json` |
 | A harness ignored a guard, flag or config | that harness's adapter (`adapters/<name>/`) |
 

@@ -1,9 +1,10 @@
----
+# CSV export endpoint
+
 id: 004-02-csv-export
 spec: docs/specs/004-reporting.md
 depends_on: []
-touches: [src/reports/, src/api/export.ts]   # used to spot parallel conflicts
----
+touches: [src/reports/, src/api/export.ts]
+
 ## Goal
 One or two sentences.
 ## Context

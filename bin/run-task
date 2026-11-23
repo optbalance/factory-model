@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# usage: run-task <worktree> <task-file> <run-dir>   (task-file: relative to the worktree)
+# usage: run-task <worktree> <task-file> <run-dir>   (task-file: absolute, or relative to the worktree)
 #        run-task --rework <worktree> <task-file> <run-dir> <remarks-file>
 # --rework: the same loop on an earlier run's branch and run dir, with your review remarks as the
 # input. They are saved as user-review-<n>.md; the implementer continues its session.
@@ -8,7 +8,8 @@ FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"; export FACTORY_HOME
 rework=0; [ "${1:-}" = --rework ] && { rework=1; shift; }
 wt=$1; task=$2; rundir=$3; mkdir -p "$rundir"
 branch=$(git -C "$wt" symbolic-ref -q HEAD) || { echo "run-task: $wt is not on a branch" >&2; exit 2; }
-[ -f "$wt/$task" ] || { echo "run-task: task file $task not found in $wt (give it relative to the worktree)" >&2; exit 2; }
+case $task in /*) [ -f "$task" ] ;; *) [ -f "$wt/$task" ] ;; esac \
+  || { echo "run-task: task file $task not found (give it absolute, or relative to $wt)" >&2; exit 2; }
 echo "$task" > "$rundir/task"                    # for bin/rework
 run() { "$FACTORY_HOME/bin/agent-run" "$@"; }
 verify() { "$FACTORY_HOME/bin/sandbox" --net none "$wt" "$rundir" -- scripts/verify > "$rundir/verify.log" 2>&1; }

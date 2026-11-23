@@ -37,8 +37,12 @@ tracker=linear              # none | <name of a trackers/ directory>
 tracker.project=ENG         # the team, project, board or repository the tracker reads
 ```
 
-`bin/tracker` reads the file from `main` with the same parser as `bin/forge`: it never sources it,
-and an unknown key or tracker stops it. `tracker.project` may also contain `/` (`owner/repo`). The
+`bin/tracker` reads the file from `main` with the same parser as `bin/forge`
+(`bin/lib/properties.sh`): it never sources it, reads only the `tracker` keys, and checks each
+against its own pattern: `tracker` is lowercase letters, digits and `-`, and `tracker.project`
+letters, digits, `.`, `_`, `-` and `/` (`owner/repo`). Keys only one tracker uses, such as
+`tracker.parent-type`, are checked by that tracker. Any other value, or an unknown tracker, stops
+it. The
 file never holds credentials; how this machine signs in to the tracker belongs to the machine
 (factory contract).
 
@@ -58,7 +62,7 @@ scripts; no tracker implements them.
 
 **Two levels.** A *story* is a parent item: its body is the spec. A *task* is a child of a story:
 its body is a task file. The tracker uses its own parent/child link (a sub-issue, a sub-task, a
-story under an epic). Where the tracker has issue types, `tracker.parent-type` and
+story under an epic, an issue in a project). Where the tracker has issue types, `tracker.parent-type` and
 `tracker.child-type` in `factory.properties` name them; each tracker documents its defaults.
 Deeper hierarchies are not part of the contract.
 
@@ -74,10 +78,10 @@ name the board's columns this way when you set it up.
 | `in-progress` | tasks approved: the factory runs them | running, or being reworked |
 | `blocked` | the planner has a question | the factory needs a decision (comment says what) |
 | `in-review` | n/a | its review (pull request) waits for you |
-| `done` | every task is done or dropped | merged into `main` |
-| `dropped` | abandoned | removed by a re-plan, or abandoned by you |
+| `done` | every task is done or canceled | merged into `main` |
+| `canceled` | abandoned | removed by a re-plan, or abandoned by you |
 
-`dropped` is usually not a column: it is the tracker's closed, cancelled or archived state.
+`canceled` is usually not a column: it is the tracker's closed or canceled state.
 `items.sh` reports any status outside these eight as `other`, and the factory ignores such items.
 
 ## Step 3. Who moves what
@@ -108,7 +112,7 @@ Story:
 | `blocked` → `todo` | you, after answering in comments | it plans again, with your comments |
 | `refined` → `todo` | you, after commenting on the story or its tasks | it plans again: updates the tasks by id, adds new ones, drops removed ones |
 | `refined` → `in-progress` | you | it starts the tasks |
-| `in-progress` → `done` | the factory | when every task is `done` or `dropped` |
+| `in-progress` → `done` | the factory | when every task is `done` or `canceled` |
 
 Task (only while its story is `in-progress`):
 
@@ -130,16 +134,25 @@ the implementer (forge contract), and two channels would need rules about which 
 | Script | Does | Prints | Exit |
 |---|---|---|---|
 | `items.sh [<story>]` | Lists the stories of `tracker.project`, or one story's tasks | one line per item, tab-separated: `key`, `status` (Step 2), `title` | 0, or 1 with the reason on stderr |
-| `read.sh <key>` | Gets an item's body | the body, exactly as `write.sh` stored it | 0, or 1 |
+| `read.sh <key>` | Gets an item's body | the body as Markdown, each line as `write.sh` or you wrote it (Step 5) | 0, or 1 |
 | `write.sh <key>\|- <story>\|- <title>` | Creates the item (key `-`) or replaces its title and body; the body comes on stdin. A new story starts in `open`, a new task in `todo`; `<story>` makes it that story's child. Updating doesn't change the status | the item's key | 0, or 1 |
-| `move.sh <key> <status>` | Sets the status, `dropped` included | nothing | 0, or 1 |
-| `comment.sh <key>` | Posts the Markdown on stdin as a comment, marked as the factory's | nothing | 0, or 1 |
+| `move.sh <key> <status>` | Sets the status, `canceled` included | nothing | 0, or 1 |
+| `comment.sh <key>` | Posts the Markdown on stdin as a comment, with the line `🏭 factory` before it | nothing | 0, or 1 |
 | `comments.sh <key>` | Takes the comments not taken yet, except the factory's own, oldest first, and records them as taken | each as `**<author>**, <time>:` then its body, or nothing | 0, or 1 |
 
-`bin/tracker publish <product-dir> <story> <dir>` writes a plan, the files in `<dir>`, one task per
-file: for each, `write.sh` with the existing key when a task of the story has that id in its
-frontmatter, else `-`; then `move.sh dropped` for each task of the story whose id isn't in
-`<dir>`. Running it twice changes nothing the second time.
+`bin/tracker publish <product-dir> <story> <dir>` writes a plan, the `*.md` files in `<dir>`, one
+task per file:
+
+1. It checks every file first, and writes nothing if one fails: each has an `id:` (lowercase
+   letters, digits, `.`, `_`, `-`), no two share one, and a `story:` line, if there is one, names
+   `<story>`.
+2. For each file, `write.sh` with the key of the story's task that has that `id:`, else `-`. The
+   title is the file's first `# ` heading, else its id.
+3. `move.sh canceled` for each of the story's tasks whose id isn't in `<dir>`.
+
+Canceled tasks are never matched, so a task the plan brings back is created again. A task without
+an `id:` line (one you made by hand) is left alone, with a warning. It prints one line per task:
+key, id, and `created`, `updated` or `canceled`. Running it twice changes nothing the second time.
 
 ## Step 5. Items: keys, bodies, comments
 
@@ -149,32 +162,47 @@ frontmatter, else `-`; then `move.sh dropped` for each task of the story whose i
 - **Task ids** are `<story key, lowercased>-TT-short-name` (`eng-12-02-csv-export`): unique across
   stories, so they name branches (`factory/<id>`) and run dirs as before. The planner chooses them;
   the tracker's key for a task is never used as its id.
-- **A story's body** is the spec, in the format the spec skill writes.
-- **A task's body** is a task file in the format of `templates/task.md`, frontmatter included,
-  with `story: <key>` in place of `spec:`. `depends_on` lists task ids, or story keys (the story
-  is `done`). The factory parses the frontmatter; the tracker never does. A tracker may mirror
-  `depends_on` as its own "blocked by" links for display; the frontmatter wins.
-- **Bodies round-trip.** `read.sh` returns byte for byte what `write.sh` stored. A tracker that
-  rewrites Markdown (rich-text editors, block-based storage) keeps the body in a form it doesn't
-  rewrite, such as a single code block; that's the tracker's job, not the factory's.
+- **Bodies are Markdown for people and models.** A story's body is the spec; a task's body is
+  the task, written like `templates/task.md` (a reference, not a format). The tracker may
+  reformat a body (escape characters, change list markers, add blank lines), as long as each line
+  stays a line: `read.sh` never joins lines.
+- **A task's fields** are lines of their own, each starting with its key, in any order:
+
+  ```
+  id: ntg-5-01-csv-export
+  story: NTG-5
+  depends_on: ntg-5-00-deps, NTG-4
+  touches: src/reports/, src/api/export.ts
+  ```
+
+  The factory takes the first line starting with each key. A list is comma-separated, `[ ]`
+  around it optional, and empty for none. A backslash before punctuation is dropped (`\[`, `\*`:
+  Markdown escapes a tracker's editor adds). `depends_on` lists task ids, or story keys (the
+  story is `done`). Everything else in the body is free text. The tracker never parses fields; it
+  may mirror `depends_on` as its own "blocked by" links for display, and the field line wins.
 - **Editing.** You may edit a task's body in the tracker while its story is `refined`, or while
   the task is `todo` or `blocked`. A running task works from the copy the factory took when it
-  started (the run dir's `task`), so an edit then counts only after the task is `blocked` and you
-  move it to `todo`.
-- **The factory's comments** carry a marker the tracker recognizes (a hidden HTML comment, a bot
-  account): `comments.sh` never returns them.
+  started (`runs/<timestamp>/<id>.md`), so an edit then counts only after the task is `blocked`
+  and you move it to `todo`.
+- **The factory's comments** start with the line `🏭 factory`, so you and a model can tell them
+  from yours at a glance, and `comments.sh` skips every comment whose first line is that.
+  Nothing else is marked: a body is whatever is in it now, whoever wrote it.
 
 ## Step 6. State
 
-A tracker keeps what it needs between calls in `$TRACKER_STATE/<key>`, `key=value` lines, through
-`state_get` and `state_set` (the helper the forges use). `$TRACKER_STATE` is
+A tracker keeps what it needs between calls in `$TRACKER_STATE/<key>`, `name=value` lines, through
+`kv_get <file> <name>` and `kv_set <file> <name> <value>` in `bin/lib/state.sh` (the forges'
+state helper uses them too). `$TRACKER_STATE` is
 `runs/tracker/<product>/`, outside the product repo. Keys in use:
 
 | Key | Meaning |
 |---|---|
 | `comments` | the newest comment taken, so `comments.sh` gives each comment once |
+| `plan` | a story's latest plan run dir (`bin/tracker sync`) |
+| `run` | a task's latest run dir (`bin/tracker sync`) |
 
-`bin/tracker sync` keeps its own keys in the same files (Module 11). Because the state is on this
+The keys a tracker uses and the factory's (`plan`, `run`) share the files, so a tracker never
+names a key `plan` or `run`. Because the state is on this
 machine, **one factory instance syncs a product's board.** A second machine would plan and run
 the same items again; the forge's rule that `submit.sh` refuses a branch someone else pushed is
 the backstop, not a way to share a board.
@@ -200,14 +228,15 @@ the backstop, not a way to share a board.
 With a throwaway product and project, and the tracker's CLI or API replaced by a stub that keeps
 items in files and logs its calls:
 
-1. `bin/tracker name` reads `factory.properties` from `main`, and stops on an unknown key or
-   tracker.
+1. `bin/tracker name` reads `factory.properties` from `main`, ignores keys it doesn't use, and
+   stops on an unknown tracker.
 2. `write.sh -` creates an item and prints its key; `write.sh <key>` updates it without changing
-   its status; `read.sh` returns the body byte for byte, frontmatter and code blocks included.
+   its status; `read.sh` returns the body with every line kept as a line, and a task's field
+   lines read back to the same values.
 3. `items.sh` maps the board's statuses to Step 2's names, and gives `other` for any other one.
 4. `comments.sh` gives a new comment once, never the factory's own; a second call prints nothing.
 5. `bin/tracker publish` twice: the second run changes nothing; with a task removed from the plan,
-   that task is `dropped`.
+   that task is `canceled`.
 6. `bin/tracker sync` with stubbed agents takes a story from `todo` to `done` through each
    transition of Step 3, and a second `sync` after each step does nothing.
 7. Then once against the real tracker, with a test project.

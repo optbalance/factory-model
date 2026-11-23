@@ -6,13 +6,17 @@
 # runs/ whose worktree file points to <product-dir>-wt/<id>. Other people's factory/* branches and
 # pull requests on the same remote are never touched. product-dir defaults to the current repo.
 # Run it through bin/start when it may start a rework (remarks, sync): the agents need the secrets.
+# REWORK_DETACH=1: sync starts the reworks in the background and returns (bin/tracker sync).
+# sync, and approve in the pick mode, hold a lock per product while they merge, verify main and
+# clean up, so two of them (a timer's bin/tracker sync and you) can't do it to the same task at
+# once; the second one says so and stops (exit 1). Started reworks don't hold it.
 set -euo pipefail
 FACTORY_HOME="$(cd "$(dirname "$0")/.." && pwd)"
 die() { echo "review: $*" >&2; exit 2; }
 mode=pick; case "${1:-}" in status|sync) mode=$1; shift ;; esac
 if [ $# -ge 1 ] && [ -d "$1" ]; then P=$1; shift; else P=.; fi
-P=$(git -C "$P" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || die "not a git repo; give the product dir"
-P=$(dirname "$P")                                       # the main checkout, also from inside a worktree
+common=$(git -C "$P" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || die "not a git repo; give the product dir"
+P=$(dirname "$common")                                  # the main checkout, also from inside a worktree
 [ "$P" != "$FACTORY_HOME" ] || die "this is the factory; give the product dir"
 forge=$("$FACTORY_HOME/bin/forge" name "$P")
 
@@ -27,8 +31,16 @@ tasks() {
     printf '%s\t%s\n' "$id" "$rd"
   done
 }
-running() { [ -d "$1/rework.lock" ] || [ ! -f "$1/status" ]; }
+. "$FACTORY_HOME/bin/lib/lock.sh"
+running() { run_alive "$1"; }                           # its first run or a rework
 fstatus() { "$FACTORY_HOME/bin/forge" status "$P" "$1" 2>/dev/null || echo error; }
+# lock / unlock: the merge lock (see the header), on fd 6; in the product's git dir, so it is one
+# per product whatever its directory is called. Anything started in the background closes fd 6.
+lock() {
+  exec 6> "$common/factory-review.lock"
+  flock -n 6 || { exec 6>&-; echo "review: another bin/review sync or approve of $P is running; try again when it ends" >&2; return 1; }
+}
+unlock() { exec 6>&-; }
 
 # verify_main: scripts/verify on main, in a fresh offline sandbox (each branch was verified alone)
 verify_main() {
@@ -60,26 +72,29 @@ status)
   while IFS=$'\t' read -r id rd; do
     [ "$want" = all ] || [ "$want" = "$id" ] || continue
     if [ -z "$rd" ]; then printf '%-30s %-18s\n' "$id" "no run dir"; continue; fi
-    if running "$rd"; then run=running
-    else run="$(cat "$rd/status")/$(cat "$rd/verdict" 2>/dev/null || echo none)"; fi
-    [ -d "$rd/rework.lock" ] && run="rework running"
+    if running "$rd"; then run=running; ! ls "$rd"/user-review-*.md >/dev/null 2>&1 || run="rework running"
+    elif [ -f "$rd/status" ]; then run="$(cat "$rd/status")/$(cat "$rd/verdict" 2>/dev/null || echo none)"
+    elif rework_interrupted "$rd"; then run="rework interrupted"
+    else run="stopped, no result"; fi
     printf '%-30s %-18s %-22s %7s  %s\n' "$id" "$(fstatus "$rd")" "$run" \
       "$(ls "$rd"/user-review-*.md 2>/dev/null | wc -l || true)" "$(sed -n 's/^url=//p' "$rd/forge-state" 2>/dev/null | tail -1)"
   done < <(tasks)
   ;;
 
 sync)
-  merged=(); rework=(); red=0
+  lock || exit 1
+  merged=(); rework=(); resume=(); red=0
   while IFS=$'\t' read -r id rd; do
     [ -n "$rd" ] || { echo "review: $id: no run dir on this machine, not touched"; continue; }
     running "$rd" && { echo "review: $id: running"; continue; }
+    rework_interrupted "$rd" && { echo "review: $id: its rework stopped before it finished; running it again"; resume+=("$rd"); continue; }
     st=$(fstatus "$rd")
     case "$st" in
       changes-requested) rework+=("$rd") ;;
       merged)            merged+=("$id") ;;
       error)             echo "review: $id: asking the forge failed; see why with: bin/forge status $P $rd" >&2; red=1 ;;
       closed)            "$FACTORY_HOME/bin/forge" discard "$P" "$rd" || red=1
-                         echo "review: $id: closed; the orchestrate skill triages it (task file or spec)" ;;
+                         echo "review: $id: closed without a merge; its worktree and branch are kept until it runs again" ;;
       *)                 echo "review: $id: $st" ;;
     esac
   done < <(tasks)
@@ -95,9 +110,18 @@ sync)
     [ $red = 1 ] || verify_main || red=1
     for id in "${merged[@]}"; do cleanup "$id"; done
   fi
-  if [ ${#rework[@]} -gt 0 ]; then
-    "$FACTORY_HOME/bin/rework" --check && "$FACTORY_HOME/bin/rework" "${rework[@]}" || red=1
-  fi
+  # reworks: new remarks, and rounds a reboot interrupted (--resume: the same remarks again)
+  for mode in rework resume; do
+    declare -n rds=$mode; [ ${#rds[@]} -gt 0 ] || continue
+    flag=(); [ $mode = resume ] && flag=(--resume)
+    if ! "$FACTORY_HOME/bin/rework" --check; then red=1
+    elif [ -n "${REWORK_DETACH:-}" ]; then
+      for rd in "${rds[@]}"; do
+        setsid "$FACTORY_HOME/bin/rework" "${flag[@]}" "$rd" < /dev/null > "$rd/rework.out" 2>&1 6>&- &
+        echo "review: $(basename "$rd"): rework started; follow it with: bin/review status $(basename "$rd")"
+      done
+    else "$FACTORY_HOME/bin/rework" "${flag[@]}" "${rds[@]}" || red=1; fi
+  done
   exit $red
   ;;
 
@@ -125,7 +149,9 @@ pick)
     select d in approve remarks re-queue skip; do [ -n "$d" ] && break; done
     case "$d" in
       approve)
-        if "$FACTORY_HOME/bin/forge" merge "$P" "$rd"; then verify_main || true; cleanup "$id"; fi ;;
+        lock || continue
+        if "$FACTORY_HOME/bin/forge" merge "$P" "$rd"; then verify_main || true; cleanup "$id"; fi
+        unlock ;;
       remarks)
         "$FACTORY_HOME/bin/rework" --check || continue
         f="$rd/remarks.edit.md"; : > "$f"
